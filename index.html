@@ -1,0 +1,838 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>デイリーレコード</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #F6F6F2; }
+  button { font-family: inherit; }
+  input, textarea { font-family: inherit; }
+  input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
+</style>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<noscript>JavaScriptを有効にしてください。</noscript>
+<script>
+if (!window.React || !window.ReactDOM) {
+  document.getElementById('root').innerHTML = '<p style="padding:20px;font-family:sans-serif">画面の部品(React)を読み込めませんでした。ネット接続を確認して再読み込みしてください。</p>';
+}
+</script>
+<script>
+"use strict";
+const { useState, useEffect, useMemo, useRef, useCallback } = React;
+// ========== 定数 ==========
+const CATEGORIES = [
+    { key: 'sousaku', label: '創作', color: '#C6463F' }, // 濃い赤
+    { key: 'nijisou', label: '二次創作', color: '#E49874' }, // 明るい橙
+    { key: 'hoshu', label: '補修', color: '#669B60' }, // 暗い緑
+    { key: 'kaji', label: '家事', color: '#AECF78' }, // 明るい黄緑
+    { key: 'undo', label: '運動', color: '#E3D959' }, // 鮮やかな黄
+    { key: 'suimin', label: '睡眠', color: '#545D9D' }, // 深い紺
+    { key: 'shokuji', label: '食事', color: '#2EB5C9' }, // 茶
+    { key: 'nyuyoku', label: '入浴', color: '#B6C4E7' }, // 淡い水色
+    { key: 'ido', label: '移動', color: '#9D9D9D' }, // 明るい灰
+    { key: 'jiyu', label: '自由時間', color: '#6E44C9' }, // 紫
+    { key: 'custom', label: '自由記入', color: '#D894AD' }, // 淡いピンク
+];
+const CAT_MAP = Object.fromEntries(CATEGORIES.map((c) => [c.key, c]));
+const SATISFACTION = [
+    { key: 5, emoji: '😊' },
+    { key: 4, emoji: '🙂' },
+    { key: 3, emoji: '😐' },
+    { key: 2, emoji: '☹️' },
+    { key: 1, emoji: '😣' },
+];
+const WEEKDAYS_MON = ['月', '火', '水', '木', '金', '土', '日'];
+const KEY_PREFIX = 'dr:';
+const PROBE_KEY = 'dr_probe';
+// ========== ユーティリティ ==========
+function pad2(n) { return String(n).padStart(2, '0'); }
+function toDateStr(d) { return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; }
+function todayStr() { return toDateStr(new Date()); }
+function parseDate(s) { return new Date(s + 'T00:00:00'); }
+function fmtJp(dateStr) {
+    const d = parseDate(dateStr);
+    const w = ['日', '月', '火', '水', '木', '金', '土'][d.getDay()];
+    return `${d.getMonth() + 1}月${d.getDate()}日(${w})`;
+}
+function shiftDate(dateStr, days) {
+    const d = parseDate(dateStr);
+    d.setDate(d.getDate() + days);
+    return toDateStr(d);
+}
+function nowClock() {
+    const d = new Date();
+    return `${d.getHours()}:${pad2(d.getMinutes())}`;
+}
+function newRecord(dateStr) {
+    return {
+        date: dateStr,
+        exerciseDay: '', thruster: '',
+        weight: '', bodyFat: '',
+        period: false, periodDay: '', pain: '',
+        sleep: '', mental: '',
+        vitamin: false, mineral: false,
+        bowel: '', energy: '',
+        memo: '', satisfaction: null,
+        customLabel: '',
+        blocks: {}, // { "0".."47": categoryKey }  30分刻み
+    };
+}
+function blocksToHours(blocks) {
+    const t = {};
+    CATEGORIES.forEach((c) => (t[c.key] = 0));
+    Object.values(blocks || {}).forEach((k) => { if (t[k] !== undefined)
+        t[k] += 0.5; });
+    return t;
+}
+function isEmptyRecord(r) {
+    const base = newRecord(r.date);
+    return Object.keys(base).every((k) => {
+        if (k === 'date')
+            return true;
+        if (k === 'blocks')
+            return Object.keys(r.blocks || {}).length === 0;
+        return JSON.stringify(r[k]) === JSON.stringify(base[k]);
+    });
+}
+// ========== ストレージ層(localStorage) ==========
+function hasStorage() {
+    try {
+        return typeof window !== 'undefined' && !!window.localStorage;
+    }
+    catch (_a) {
+        return false;
+    }
+}
+function errMsg(e) { return (e && (e.message || String(e))) || 'unknown'; }
+async function stSet(key, value) {
+    if (!hasStorage())
+        return { ok: false, error: 'localStorage なし' };
+    try {
+        window.localStorage.setItem(key, value);
+        return { ok: true };
+    }
+    catch (e) {
+        return { ok: false, error: errMsg(e) };
+    }
+}
+async function stGet(key) {
+    if (!hasStorage())
+        return { ok: false, error: 'localStorage なし' };
+    try {
+        const v = window.localStorage.getItem(key);
+        if (typeof v !== 'string')
+            return { ok: false, notFound: true, error: 'value なし' };
+        return { ok: true, value: v };
+    }
+    catch (e) {
+        return { ok: false, notFound: true, error: errMsg(e) };
+    }
+}
+async function stList(prefix) {
+    if (!hasStorage())
+        return { ok: false, error: 'localStorage なし', keys: [] };
+    try {
+        const keys = [];
+        for (let i = 0; i < window.localStorage.length; i++) {
+            const k = window.localStorage.key(i);
+            if (k && k.startsWith(prefix))
+                keys.push(k);
+        }
+        return { ok: true, keys };
+    }
+    catch (e) {
+        return { ok: false, error: errMsg(e), keys: [] };
+    }
+}
+async function stDelete(key) {
+    if (!hasStorage())
+        return { ok: false };
+    try {
+        window.localStorage.removeItem(key);
+        return { ok: true };
+    }
+    catch (e) {
+        return { ok: false, error: errMsg(e) };
+    }
+}
+// 起動時検査: 書いて読んで一致するか
+async function probeStorage() {
+    const stamp = String(Date.now());
+    const s = await stSet(PROBE_KEY, stamp);
+    if (!s.ok)
+        return { ok: false, error: `書き込み失敗: ${s.error}` };
+    const g = await stGet(PROBE_KEY);
+    if (!g.ok)
+        return { ok: false, error: `読み出し失敗: ${g.error}` };
+    if (g.value !== stamp)
+        return { ok: false, error: '書いた値と読んだ値が不一致' };
+    return { ok: true };
+}
+// メモリ上のキャッシュ(この画面を開いている間の保持)。ストレージ成功時も同期しておく。
+const memCache = {};
+async function loadRecord(dateStr) {
+    const key = KEY_PREFIX + dateStr;
+    const g = await stGet(key);
+    if (g.ok) {
+        try {
+            const parsed = JSON.parse(g.value);
+            memCache[key] = g.value;
+            return { record: { ...newRecord(dateStr), ...parsed, date: dateStr }, from: 'storage' };
+        }
+        catch ( /* fallthrough */_a) { /* fallthrough */ }
+    }
+    if (memCache[key]) {
+        try {
+            return { record: { ...newRecord(dateStr), ...JSON.parse(memCache[key]), date: dateStr }, from: 'memory' };
+        }
+        catch ( /* fallthrough */_b) { /* fallthrough */ }
+    }
+    return { record: newRecord(dateStr), from: 'new' };
+}
+async function saveRecord(record) {
+    const key = KEY_PREFIX + record.date;
+    let json;
+    try {
+        json = JSON.stringify(record);
+    }
+    catch (e) {
+        return { ok: false, error: 'JSON化失敗' };
+    }
+    memCache[key] = json;
+    return stSet(key, json);
+}
+async function listRecordDates() {
+    const l = await stList(KEY_PREFIX);
+    const fromStorage = l.ok ? l.keys : [];
+    const fromMem = Object.keys(memCache);
+    const all = new Set([...fromStorage, ...fromMem].filter((k) => k.startsWith(KEY_PREFIX)));
+    return { ok: l.ok, dates: [...all].map((k) => k.slice(KEY_PREFIX.length)).sort() };
+}
+async function loadAllRecords() {
+    const { dates } = await listRecordDates();
+    const results = await Promise.all(dates.map((d) => loadRecord(d)));
+    return results.map((r) => r.record).filter((r) => !isEmptyRecord(r));
+}
+// ========== エクスポート / インポート ==========
+function exportMonthText(records, y, m) {
+    const recs = records
+        .filter((r) => { const d = parseDate(r.date); return d.getFullYear() === y && d.getMonth() === m; })
+        .sort((a, b) => a.date.localeCompare(b.date));
+    const head = `========================================\n${y}年${m + 1}月 デイリーレコード\n========================================\n\n`;
+    if (!recs.length)
+        return head + 'この月の記録はありません。\n';
+    const body = recs.map((r) => {
+        var _a;
+        const h = blocksToHours(r.blocks);
+        const L = [];
+        L.push(`【${fmtJp(r.date)}】`);
+        L.push(`運動: ${r.exerciseDay || '-'}日目 / スラスター${r.thruster || 0}回`);
+        L.push(`体重: ${r.weight || '-'}kg / 体脂肪率: ${r.bodyFat || '-'}%`);
+        L.push(`生理: ${r.period ? `${r.periodDay || '-'}日目` : 'なし'} / 痛み: ${r.pain || 'なし'}`);
+        L.push(`睡眠: ${r.sleep || '-'} / メンタル: ${r.mental || '-'}`);
+        L.push(`サプリ: ${[r.vitamin && 'ビタミン', r.mineral && 'ミネラル'].filter(Boolean).join('・') || 'なし'} / 排便: ${r.bowel || '-'} / 活力: ${r.energy || '-'}`);
+        L.push(`原稿: 創作${h.sousaku}h / 二次創作${h.nijisou}h`);
+        L.push(`時間配分: ${CATEGORIES.map((c) => `${c.label}${h[c.key]}h`).join(' / ')}`);
+        // 時間帯そのものも残す(取り込み時に円グラフを正確に復元するため)
+        const slots = Object.entries(r.blocks || {}).sort((a, b) => Number(a[0]) - Number(b[0]));
+        if (slots.length)
+            L.push(`時間帯: ${slots.map(([i, k]) => `${i}=${k}`).join(',')}`);
+        if (r.customLabel)
+            L.push(`自由記入の内容: ${r.customLabel}`);
+        L.push(`満足度: ${r.satisfaction ? `${(_a = SATISFACTION.find((s) => s.key === r.satisfaction)) === null || _a === void 0 ? void 0 : _a.emoji} ${r.satisfaction}/5` : '-'}`);
+        if (r.memo)
+            L.push(`メモ: ${r.memo.replace(/\n/g, ' ⏎ ')}`);
+        return L.join('\n');
+    }).join('\n\n');
+    let satSum = 0, satN = 0;
+    const mt = {};
+    CATEGORIES.forEach((c) => (mt[c.key] = 0));
+    recs.forEach((r) => {
+        const h = blocksToHours(r.blocks);
+        CATEGORIES.forEach((c) => (mt[c.key] += h[c.key]));
+        if (r.satisfaction) {
+            satSum += r.satisfaction;
+            satN++;
+        }
+    });
+    const tail = `\n\n========================================\n【${y}年${m + 1}月 サマリー】\n記録日数: ${recs.length}日\n${CATEGORIES.map((c) => `${c.label}: ${mt[c.key]}h`).join(' / ')}\n平均満足度: ${satN ? (satSum / satN).toFixed(1) : '-'}/5\n========================================\n`;
+    return head + body + tail;
+}
+function parseImportText(text) {
+    const yearMatch = text.match(/(\d{4})年\s*(\d{1,2})月\s*デイリーレコード/);
+    const headerYear = yearMatch ? parseInt(yearMatch[1], 10) : null;
+    const now = new Date();
+    const blocksText = text.split(/(?=【\d+月\d+日)/).filter((b) => /^【\d+月\d+日/.test(b.trim()));
+    const out = [];
+    for (const raw of blocksText) {
+        const block = raw.split(/={10,}/)[0]; // サマリー以降は切り捨て
+        const dm = block.match(/【(\d+)月(\d+)日/);
+        if (!dm)
+            continue;
+        const month = parseInt(dm[1], 10), day = parseInt(dm[2], 10);
+        let year = headerYear !== null && headerYear !== void 0 ? headerYear : now.getFullYear();
+        if (!headerYear && month > now.getMonth() + 2)
+            year -= 1;
+        const rec = newRecord(`${year}-${pad2(month)}-${pad2(day)}`);
+        const clean = (v) => (v === '-' || v === undefined ? '' : v);
+        let m;
+        if ((m = block.match(/運動:\s*(\S+?)日目\s*\/\s*スラスター(\S+?)回/))) {
+            rec.exerciseDay = clean(m[1]);
+            rec.thruster = m[2] === '0' ? '' : clean(m[2]);
+        }
+        if ((m = block.match(/体重:\s*(\S+?)kg\s*\/\s*体脂肪率:\s*(\S+?)%/))) {
+            rec.weight = clean(m[1]);
+            rec.bodyFat = clean(m[2]);
+        }
+        if ((m = block.match(/生理:\s*(.+?)\s*\/\s*痛み:\s*(.*)/))) {
+            if (m[1] !== 'なし') {
+                rec.period = true;
+                const dd = m[1].match(/(\S+?)日目/);
+                rec.periodDay = dd ? clean(dd[1]) : '';
+            }
+            rec.pain = m[2].trim() === 'なし' ? '' : m[2].trim();
+        }
+        if ((m = block.match(/睡眠:\s*(\S+?)\s*\/\s*メンタル:\s*(\S+)/))) {
+            rec.sleep = clean(m[1]);
+            rec.mental = clean(m[2]);
+        }
+        if ((m = block.match(/サプリ:\s*(.+?)\s*\/\s*排便:\s*(\S+?)\s*\/\s*活力:\s*(\S+)/))) {
+            rec.vitamin = m[1].includes('ビタミン');
+            rec.mineral = m[1].includes('ミネラル');
+            rec.bowel = clean(m[2]);
+            rec.energy = clean(m[3]);
+        }
+        if ((m = block.match(/時間帯:\s*(.+)/))) {
+            m[1].split(',').forEach((pair) => {
+                const [i, k] = pair.trim().split('=');
+                if (i !== undefined && CAT_MAP[k])
+                    rec.blocks[String(parseInt(i, 10))] = k;
+            });
+        }
+        else if ((m = block.match(/時間配分:\s*(.+)/))) {
+            // 旧形式: 時間帯情報がないので0時から順に埋める近似
+            let slot = 0;
+            m[1].split('/').forEach((seg) => {
+                const mm = seg.trim().match(/^(.+?)([\d.]+)h$/);
+                if (!mm)
+                    return;
+                const cat = CATEGORIES.find((c) => c.label === mm[1].trim());
+                if (!cat)
+                    return;
+                const n = Math.round(parseFloat(mm[2]) * 2);
+                for (let j = 0; j < n && slot < 48; j++)
+                    rec.blocks[String(slot++)] = cat.key;
+            });
+        }
+        if ((m = block.match(/自由記入の内容:\s*(.*)/)))
+            rec.customLabel = m[1].trim();
+        if ((m = block.match(/満足度:\s*\S*\s*(\d)\/5/)))
+            rec.satisfaction = parseInt(m[1], 10);
+        if ((m = block.match(/メモ:\s*(.*)/)))
+            rec.memo = m[1].replace(/ ⏎ /g, '\n');
+        out.push(rec);
+    }
+    return out;
+}
+// ========== デザイントークン ==========
+const T = {
+    bg: '#F6F6F2', paper: '#FFFFFF', ink: '#1C1C1A', muted: '#6B6B63', line: '#DEDED6',
+    accent: '#2B4590', accentSoft: '#E6EBF7', danger: '#B42318', dangerSoft: '#FBEAE7',
+};
+const S = {
+    app: { fontFamily: '"Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", system-ui, sans-serif', background: T.bg, color: T.ink, minHeight: '100vh', paddingBottom: 76 },
+    wrap: { maxWidth: 520, margin: '0 auto', padding: '14px 14px 0' },
+    card: { background: T.paper, border: `1px solid ${T.line}`, borderRadius: 12, padding: '14px 14px 12px' },
+    title: { fontSize: 13, fontWeight: 700, color: T.ink, marginBottom: 8 },
+    input: { border: `1px solid ${T.line}`, borderRadius: 8, padding: '7px 9px', fontSize: 15, background: '#fff', color: T.ink, outline: 'none' },
+    btn: (primary) => ({
+        padding: '9px 14px', borderRadius: 9, fontSize: 14, cursor: 'pointer', fontWeight: 600,
+        border: primary ? 'none' : `1px solid ${T.line}`, background: primary ? T.accent : '#fff', color: primary ? '#fff' : T.ink,
+    }),
+    chip: (on, color) => ({
+        padding: '6px 12px', borderRadius: 999, fontSize: 13, cursor: 'pointer', lineHeight: 1.2,
+        border: on ? `1.5px solid ${color || T.accent}` : `1px solid ${T.line}`,
+        background: on ? (color || T.accent) : '#fff', color: on ? '#fff' : T.ink,
+    }),
+};
+// ========== 小部品 ==========
+function Row({ label, children }) {
+    return (React.createElement("div", { style: { display: 'flex', alignItems: 'flex-start', gap: 10, padding: '8px 0', borderTop: `1px solid ${T.line}` } },
+        React.createElement("div", { style: { width: 78, flexShrink: 0, fontSize: 13, color: T.muted, paddingTop: 6 } }, label),
+        React.createElement("div", { style: { flex: 1 } }, children)));
+}
+function NumIn({ value, onChange, w = 60, suffix, ph = '0' }) {
+    return (React.createElement("span", { style: { display: 'inline-flex', alignItems: 'center', gap: 5 } },
+        React.createElement("input", { type: "number", inputMode: "decimal", value: value, placeholder: ph, onChange: (e) => onChange(e.target.value), style: { ...S.input, width: w } }),
+        suffix && React.createElement("span", { style: { fontSize: 12, color: T.muted } }, suffix)));
+}
+function Chips({ options, value, onChange }) {
+    return (React.createElement("div", { style: { display: 'flex', gap: 6, flexWrap: 'wrap' } }, options.map((o) => (React.createElement("button", { key: o, onClick: () => onChange(value === o ? '' : o), style: S.chip(value === o) }, o)))));
+}
+function Check({ on, onToggle }) {
+    return (React.createElement("button", { onClick: onToggle, "aria-pressed": on, style: { width: 22, height: 22, borderRadius: 6, border: on ? 'none' : `1.5px solid ${T.line}`, background: on ? T.accent : '#fff', color: '#fff', fontSize: 13, cursor: 'pointer', flexShrink: 0 } }, on ? '✓' : ''));
+}
+// ========== 時間配分ホイール(24時間の円盤をタップ/ドラッグで塗る) ==========
+function slotFromPoint(clientX, clientY, svgEl, size) {
+    const rect = svgEl.getBoundingClientRect();
+    const scale = size / rect.width;
+    const x = (clientX - rect.left) * scale - size / 2;
+    const y = (clientY - rect.top) * scale - size / 2;
+    const dist = Math.sqrt(x * x + y * y);
+    const R = size / 2 - 22, rIn = 44;
+    if (dist < rIn || dist > R + 6)
+        return null;
+    let ang = Math.atan2(y, x) + Math.PI / 2; // 0時を真上に
+    if (ang < 0)
+        ang += 2 * Math.PI;
+    return Math.floor((ang / (2 * Math.PI)) * 48) % 48;
+}
+function TimeWheel({ blocks, onChange, customLabel, onCustomLabel }) {
+    const [cat, setCat] = useState('sousaku');
+    const [rangeMode, setRangeMode] = useState(false);
+    const [anchor, setAnchor] = useState(null);
+    const svgRef = useRef(null);
+    const dragRef = useRef({ active: false, start: null, moved: false, draft: null });
+    const hours = useMemo(() => blocksToHours(blocks), [blocks]);
+    const filled = Object.keys(blocks || {}).length;
+    const size = 320, cx = size / 2, cy = size / 2, R = size / 2 - 22, rIn = 44;
+    const wedge = (i) => {
+        const a0 = (i / 48) * 2 * Math.PI - Math.PI / 2;
+        const a1 = ((i + 1) / 48) * 2 * Math.PI - Math.PI / 2;
+        const p = (r, a) => `${cx + r * Math.cos(a)} ${cy + r * Math.sin(a)}`;
+        return `M ${p(rIn, a0)} L ${p(R, a0)} A ${R} ${R} 0 0 1 ${p(R, a1)} L ${p(rIn, a1)} A ${rIn} ${rIn} 0 0 0 ${p(rIn, a0)} Z`;
+    };
+    const commitTap = (i) => {
+        const next = { ...(blocks || {}) };
+        if (!rangeMode) {
+            if (next[i] === cat)
+                delete next[i];
+            else
+                next[i] = cat;
+            onChange(next);
+            return;
+        }
+        if (anchor === null) {
+            setAnchor(i);
+            return;
+        }
+        const [a, b] = anchor <= i ? [anchor, i] : [i, anchor];
+        for (let j = a; j <= b; j++)
+            next[j] = cat;
+        onChange(next);
+        setAnchor(null);
+    };
+    const onDown = (e) => {
+        var _a, _b;
+        const i = slotFromPoint(e.clientX, e.clientY, svgRef.current, size);
+        if (i === null)
+            return;
+        (_b = (_a = e.currentTarget).setPointerCapture) === null || _b === void 0 ? void 0 : _b.call(_a, e.pointerId);
+        dragRef.current = { active: true, start: i, moved: false, draft: { ...(blocks || {}) } };
+    };
+    const onMove = (e) => {
+        const d = dragRef.current;
+        if (!d.active || rangeMode)
+            return;
+        const i = slotFromPoint(e.clientX, e.clientY, svgRef.current, size);
+        if (i === null || (i === d.start && !d.moved))
+            return;
+        if (!d.moved) {
+            d.moved = true;
+            d.draft[d.start] = cat;
+        }
+        d.draft[i] = cat;
+        onChange({ ...d.draft });
+    };
+    const onUp = () => {
+        const d = dragRef.current;
+        if (!d.active)
+            return;
+        dragRef.current = { active: false, start: null, moved: false, draft: null };
+        if (!d.moved)
+            commitTap(d.start);
+    };
+    return (React.createElement("div", null,
+        React.createElement("div", { style: { display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'center', marginBottom: 8 } }, CATEGORIES.map((c) => {
+            const on = cat === c.key;
+            return (React.createElement("button", { key: c.key, onClick: () => { setCat(c.key); setAnchor(null); }, style: { display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 999, fontSize: 13, cursor: 'pointer',
+                    border: on ? `2px solid ${T.ink}` : `1px solid ${T.line}`, background: on ? '#EFEFE9' : '#fff', color: T.ink, fontWeight: on ? 700 : 500 } },
+                React.createElement("span", { style: { width: 11, height: 11, borderRadius: 999, background: c.color, flexShrink: 0 } }),
+                c.label,
+                hours[c.key] > 0 ? React.createElement("span", { style: { fontSize: 11, color: T.muted } },
+                    hours[c.key],
+                    "h") : null));
+        })),
+        React.createElement("div", { style: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, marginBottom: 4 } },
+            React.createElement("button", { onClick: () => { setRangeMode(!rangeMode); setAnchor(null); }, style: { ...S.chip(rangeMode), fontSize: 12 } },
+                "\u7BC4\u56F2\u5857\u308A",
+                rangeMode ? '：ON' : '：OFF'),
+            React.createElement("div", { style: { fontSize: 12, color: T.muted } }, rangeMode
+                ? (anchor !== null ? `${Math.floor(anchor / 2)}:${anchor % 2 ? '30' : '00'} から… 終点をタップ` : '始点をタップ')
+                : 'タップで塗る／もう一度で消す。ドラッグで連続塗り')),
+        React.createElement("svg", { ref: svgRef, viewBox: `0 0 ${size} ${size}`, style: { width: '100%', maxWidth: 360, display: 'block', margin: '0 auto', touchAction: 'none', userSelect: 'none' }, onPointerDown: onDown, onPointerMove: onMove, onPointerUp: onUp, onPointerCancel: onUp },
+            Array.from({ length: 48 }).map((_, i) => {
+                const k = blocks === null || blocks === void 0 ? void 0 : blocks[i];
+                const c = k ? CAT_MAP[k] : null;
+                const isAnchor = anchor === i;
+                return React.createElement("path", { key: i, d: wedge(i), fill: c ? c.color : '#EDEDE6', stroke: isAnchor ? T.ink : '#fff', strokeWidth: isAnchor ? 2.5 : 1 });
+            }),
+            Array.from({ length: 24 }).map((_, h) => {
+                const a = (h / 24) * 2 * Math.PI - Math.PI / 2;
+                const rr = R + 13;
+                return React.createElement("text", { key: h, x: cx + rr * Math.cos(a), y: cy + rr * Math.sin(a), fontSize: 11, fill: T.muted, textAnchor: "middle", dominantBaseline: "middle" }, h);
+            }),
+            React.createElement("circle", { cx: cx, cy: cy, r: rIn - 2, fill: "#F6F6F2", stroke: T.line }),
+            React.createElement("text", { x: cx, y: cy - 6, fontSize: 11, fill: T.muted, textAnchor: "middle" },
+                filled / 2,
+                "h"),
+            React.createElement("text", { x: cx, y: cy + 9, fontSize: 9, fill: T.muted, textAnchor: "middle" }, "/ 24h")),
+        (cat === 'custom' || hours.custom > 0) && (React.createElement("div", { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 } },
+            React.createElement("span", { style: { width: 11, height: 11, borderRadius: 999, background: CAT_MAP.custom.color, flexShrink: 0 } }),
+            React.createElement("input", { value: customLabel || '', onChange: (e) => onCustomLabel(e.target.value), placeholder: "\u81EA\u7531\u8A18\u5165\u306E\u5185\u5BB9\uFF08\u6620\u753B\u3001\u5C55\u793A\u3001\u30AB\u30D5\u30A7\u306A\u3069\uFF09", style: { ...S.input, flex: 1, fontSize: 14 } }))),
+        filled > 0 && (React.createElement("div", { style: { textAlign: 'right', marginTop: 4 } },
+            React.createElement("button", { onClick: () => { onChange({}); setAnchor(null); }, style: { ...S.btn(false), padding: '5px 10px', fontSize: 12 } }, "\u5168\u90E8\u6D88\u3059")))));
+}
+// ========== 記録画面 ==========
+function EntryScreen({ rec, up, loading }) {
+    const hours = useMemo(() => blocksToHours(rec.blocks), [rec.blocks]);
+    if (loading)
+        return React.createElement("div", { style: { ...S.card, color: T.muted, fontSize: 13 } }, "\u8AAD\u307F\u8FBC\u307F\u4E2D\u2026");
+    return (React.createElement("div", { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
+        React.createElement("div", { style: S.card },
+            React.createElement("div", { style: S.title }, "\u4F53\u8ABF"),
+            React.createElement(Row, { label: "\u904B\u52D5" },
+                React.createElement("div", { style: { display: 'flex', gap: 10, flexWrap: 'wrap' } },
+                    React.createElement(NumIn, { value: rec.exerciseDay, onChange: (v) => up('exerciseDay', v), w: 56, suffix: "\u65E5\u76EE" }),
+                    React.createElement(NumIn, { value: rec.thruster, onChange: (v) => up('thruster', v), w: 56, suffix: "\u56DE\uFF08\u30B9\u30E9\u30B9\u30BF\u30FC\uFF09" }))),
+            React.createElement(Row, { label: "\u4F53\u91CD/\u8102\u80AA\u7387" },
+                React.createElement("div", { style: { display: 'flex', gap: 10, flexWrap: 'wrap' } },
+                    React.createElement(NumIn, { value: rec.weight, onChange: (v) => up('weight', v), w: 64, suffix: "kg", ph: "0.0" }),
+                    React.createElement(NumIn, { value: rec.bodyFat, onChange: (v) => up('bodyFat', v), w: 64, suffix: "%", ph: "0.0" }))),
+            React.createElement(Row, { label: "\u751F\u7406/\u75DB\u307F" },
+                React.createElement("div", { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+                    React.createElement(Check, { on: rec.period, onToggle: () => up('period', !rec.period) }),
+                    rec.period && React.createElement(NumIn, { value: rec.periodDay, onChange: (v) => up('periodDay', v), w: 50, suffix: "\u65E5\u76EE" }),
+                    React.createElement("input", { value: rec.pain, placeholder: "\u75DB\u307F\u306E\u7B87\u6240", onChange: (e) => up('pain', e.target.value), style: { ...S.input, width: 120 } }))),
+            React.createElement(Row, { label: "\u7761\u7720" },
+                React.createElement(Chips, { options: ['過多', '適度', '不足'], value: rec.sleep, onChange: (v) => up('sleep', v) })),
+            React.createElement(Row, { label: "\u30E1\u30F3\u30BF\u30EB" },
+                React.createElement(Chips, { options: ['好調', '普通', '不調'], value: rec.mental, onChange: (v) => up('mental', v) })),
+            React.createElement(Row, { label: "\u30B5\u30D7\u30EA" },
+                React.createElement("div", { style: { display: 'flex', gap: 6 } },
+                    React.createElement("button", { onClick: () => up('vitamin', !rec.vitamin), style: S.chip(rec.vitamin) }, "\u30D3\u30BF\u30DF\u30F3"),
+                    React.createElement("button", { onClick: () => up('mineral', !rec.mineral), style: S.chip(rec.mineral) }, "\u30DF\u30CD\u30E9\u30EB"))),
+            React.createElement(Row, { label: "\u6392\u4FBF" },
+                React.createElement(Chips, { options: ['有', '無'], value: rec.bowel, onChange: (v) => up('bowel', v) })),
+            React.createElement(Row, { label: "\u6D3B\u529B" },
+                React.createElement(Chips, { options: ['有', '普通', '無'], value: rec.energy, onChange: (v) => up('energy', v) }))),
+        React.createElement("div", { style: S.card },
+            React.createElement("div", { style: S.title }, "1\u65E5\u306E\u6642\u9593\u914D\u5206"),
+            React.createElement(TimeWheel, { blocks: rec.blocks, onChange: (v) => up('blocks', v), customLabel: rec.customLabel, onCustomLabel: (v) => up('customLabel', v) })),
+        React.createElement("div", { style: S.card },
+            React.createElement("div", { style: S.title }, "\u539F\u7A3F\uFF08\u6642\u9593\u914D\u5206\u304B\u3089\u81EA\u52D5\u8A08\u7B97\uFF09"),
+            React.createElement("div", { style: { display: 'flex', gap: 28 } },
+                React.createElement("div", null,
+                    React.createElement("div", { style: { fontSize: 24, fontWeight: 700, color: CAT_MAP.sousaku.color } },
+                        hours.sousaku,
+                        React.createElement("span", { style: { fontSize: 13 } }, "h")),
+                    React.createElement("div", { style: { fontSize: 12, color: T.muted } }, "\u5275\u4F5C")),
+                React.createElement("div", null,
+                    React.createElement("div", { style: { fontSize: 24, fontWeight: 700, color: CAT_MAP.nijisou.color } },
+                        hours.nijisou,
+                        React.createElement("span", { style: { fontSize: 13 } }, "h")),
+                    React.createElement("div", { style: { fontSize: 12, color: T.muted } }, "\u4E8C\u6B21\u5275\u4F5C")))),
+        React.createElement("div", { style: S.card },
+            React.createElement("div", { style: S.title }, "\u65E5\u8A18\u30FB\u30E1\u30E2"),
+            React.createElement("textarea", { value: rec.memo, onChange: (e) => up('memo', e.target.value), placeholder: "\u4ECA\u65E5\u3042\u3063\u305F\u3053\u3068\u3001\u6C17\u3065\u3044\u305F\u3053\u3068\u306A\u3069", style: { ...S.input, width: '100%', boxSizing: 'border-box', minHeight: 96, resize: 'vertical', fontFamily: 'inherit', lineHeight: 1.6 } })),
+        React.createElement("div", { style: S.card },
+            React.createElement("div", { style: S.title }, "\u4ECA\u65E5\u306E\u6E80\u8DB3\u5EA6"),
+            React.createElement("div", { style: { display: 'flex', justifyContent: 'space-between', padding: '0 6px' } }, SATISFACTION.map((s) => (React.createElement("button", { key: s.key, onClick: () => up('satisfaction', rec.satisfaction === s.key ? null : s.key), style: { background: 'none', border: 'none', cursor: 'pointer', fontSize: 30, padding: 4, opacity: rec.satisfaction && rec.satisfaction !== s.key ? 0.3 : 1, transform: rec.satisfaction === s.key ? 'scale(1.2)' : 'none' } }, s.emoji)))))));
+}
+// ========== カレンダー画面 ==========
+function CalendarScreen({ ym, setYm, records, onPick, today }) {
+    const byDate = useMemo(() => Object.fromEntries(records.map((r) => [r.date, r])), [records]);
+    const first = new Date(ym.y, ym.m, 1);
+    const startOffset = (first.getDay() + 6) % 7; // 月曜始まり
+    const daysInMonth = new Date(ym.y, ym.m + 1, 0).getDate();
+    const cells = [];
+    for (let i = 0; i < startOffset; i++)
+        cells.push(null);
+    for (let d = 1; d <= daysInMonth; d++)
+        cells.push(d);
+    const monthRecs = records.filter((r) => { const d = parseDate(r.date); return d.getFullYear() === ym.y && d.getMonth() === ym.m; });
+    return (React.createElement("div", { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
+        React.createElement("div", { style: S.card },
+            React.createElement("div", { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 } },
+                React.createElement("button", { onClick: () => setYm(ym.m === 0 ? { y: ym.y - 1, m: 11 } : { y: ym.y, m: ym.m - 1 }), style: S.btn(false) }, "\u2039"),
+                React.createElement("div", { style: { fontSize: 16, fontWeight: 700 } },
+                    ym.y,
+                    "\u5E74",
+                    ym.m + 1,
+                    "\u6708 ",
+                    React.createElement("span", { style: { fontSize: 12, color: T.muted, fontWeight: 400 } },
+                        "\u8A18\u9332 ",
+                        monthRecs.length,
+                        "\u65E5")),
+                React.createElement("button", { onClick: () => setYm(ym.m === 11 ? { y: ym.y + 1, m: 0 } : { y: ym.y, m: ym.m + 1 }), style: S.btn(false) }, "\u203A")),
+            React.createElement("div", { style: { display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 4 } },
+                WEEKDAYS_MON.map((w, i) => (React.createElement("div", { key: w, style: { textAlign: 'center', fontSize: 11, color: i >= 5 ? T.danger : T.muted, paddingBottom: 4 } }, w))),
+                cells.map((d, idx) => {
+                    var _a;
+                    if (d === null)
+                        return React.createElement("div", { key: `e${idx}` });
+                    const ds = `${ym.y}-${pad2(ym.m + 1)}-${pad2(d)}`;
+                    const r = byDate[ds];
+                    const isToday = ds === today;
+                    const h = r ? blocksToHours(r.blocks) : null;
+                    return (React.createElement("button", { key: ds, onClick: () => onPick(ds), style: {
+                            aspectRatio: '1 / 1.15', borderRadius: 8, cursor: 'pointer', padding: 3,
+                            border: isToday ? `2px solid ${T.accent}` : `1px solid ${T.line}`,
+                            background: r ? T.accentSoft : '#fff', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'space-between',
+                        } },
+                        React.createElement("div", { style: { fontSize: 12, fontWeight: isToday ? 700 : 500, color: T.ink } }, d),
+                        React.createElement("div", { style: { fontSize: 15, lineHeight: 1 } }, (r === null || r === void 0 ? void 0 : r.satisfaction) ? (_a = SATISFACTION.find((s) => s.key === r.satisfaction)) === null || _a === void 0 ? void 0 : _a.emoji : ''),
+                        React.createElement("div", { style: { fontSize: 9, color: CAT_MAP.sousaku.color, fontWeight: 700, minHeight: 10 } }, h && h.sousaku > 0 ? `${h.sousaku}h` : '')));
+                })),
+            React.createElement("div", { style: { fontSize: 11, color: T.muted, marginTop: 8 } }, "\u65E5\u4ED8\u3092\u30BF\u30C3\u30D7\u3067\u305D\u306E\u65E5\u306E\u8A18\u9332\u3078\u3002\u6570\u5B57\u306F\u5275\u4F5C\u6642\u9593\u3002"))));
+}
+// ========== 傾向画面 ==========
+function StatsScreen({ ym, setYm, records, onImported, storageOk }) {
+    var _a, _b;
+    const [exportText, setExportText] = useState('');
+    const [importText, setImportText] = useState('');
+    const [importMsg, setImportMsg] = useState('');
+    const [copied, setCopied] = useState(false);
+    const monthRecs = useMemo(() => records
+        .filter((r) => { const d = parseDate(r.date); return d.getFullYear() === ym.y && d.getMonth() === ym.m; })
+        .sort((a, b) => a.date.localeCompare(b.date)), [records, ym]);
+    const totals = useMemo(() => {
+        const t = {};
+        CATEGORIES.forEach((c) => (t[c.key] = 0));
+        monthRecs.forEach((r) => { const h = blocksToHours(r.blocks); CATEGORIES.forEach((c) => (t[c.key] += h[c.key])); });
+        return t;
+    }, [monthRecs]);
+    const maxTotal = Math.max(1, ...Object.values(totals));
+    const sat = monthRecs.filter((r) => r.satisfaction);
+    const avgSat = sat.length ? (sat.reduce((a, r) => a + r.satisfaction, 0) / sat.length).toFixed(1) : '-';
+    const weights = monthRecs.filter((r) => r.weight !== '' && !isNaN(parseFloat(r.weight)));
+    const wFirst = (_a = weights[0]) === null || _a === void 0 ? void 0 : _a.weight, wLast = (_b = weights[weights.length - 1]) === null || _b === void 0 ? void 0 : _b.weight;
+    const sleepCount = { 過多: 0, 適度: 0, 不足: 0 };
+    const mentalCount = { 好調: 0, 普通: 0, 不調: 0 };
+    monthRecs.forEach((r) => { if (sleepCount[r.sleep] !== undefined)
+        sleepCount[r.sleep]++; if (mentalCount[r.mental] !== undefined)
+        mentalCount[r.mental]++; });
+    const doExport = () => { setExportText(exportMonthText(records, ym.y, ym.m)); setCopied(false); };
+    const doCopy = async () => {
+        try {
+            await navigator.clipboard.writeText(exportText);
+            setCopied(true);
+        }
+        catch (_a) {
+            setCopied(false);
+        }
+    };
+    const doImport = async () => {
+        const recs = parseImportText(importText);
+        if (!recs.length) {
+            setImportMsg('日付の行（【9月3日(木)】の形）が見つかりません');
+            return;
+        }
+        let ok = 0;
+        for (const r of recs) {
+            const res = await saveRecord(r);
+            if (res.ok)
+                ok++;
+        }
+        if (ok === recs.length)
+            setImportMsg(`${ok}日分を取り込みました`);
+        else if (ok > 0)
+            setImportMsg(`${ok}/${recs.length}日分を保存できました。残りはこの画面を開いている間だけ保持されます`);
+        else
+            setImportMsg(`${recs.length}日分を読み取りましたが端末保存はできませんでした。この画面を開いている間は表示されます`);
+        setImportText('');
+        onImported();
+    };
+    return (React.createElement("div", { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
+        React.createElement("div", { style: S.card },
+            React.createElement("div", { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 } },
+                React.createElement("button", { onClick: () => setYm(ym.m === 0 ? { y: ym.y - 1, m: 11 } : { y: ym.y, m: ym.m - 1 }), style: S.btn(false) }, "\u2039"),
+                React.createElement("div", { style: { fontSize: 16, fontWeight: 700 } },
+                    ym.y,
+                    "\u5E74",
+                    ym.m + 1,
+                    "\u6708"),
+                React.createElement("button", { onClick: () => setYm(ym.m === 11 ? { y: ym.y + 1, m: 0 } : { y: ym.y, m: ym.m + 1 }), style: S.btn(false) }, "\u203A")),
+            monthRecs.length === 0 ? (React.createElement("div", { style: { fontSize: 13, color: T.muted } }, "\u3053\u306E\u6708\u306E\u8A18\u9332\u306F\u307E\u3060\u3042\u308A\u307E\u305B\u3093\u3002")) : (React.createElement(React.Fragment, null,
+                React.createElement("div", { style: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginBottom: 12 } },
+                    React.createElement("div", null,
+                        React.createElement("div", { style: { fontSize: 20, fontWeight: 700 } },
+                            monthRecs.length,
+                            React.createElement("span", { style: { fontSize: 12 } }, "\u65E5")),
+                        React.createElement("div", { style: { fontSize: 11, color: T.muted } }, "\u8A18\u9332\u65E5\u6570")),
+                    React.createElement("div", null,
+                        React.createElement("div", { style: { fontSize: 20, fontWeight: 700 } }, avgSat),
+                        React.createElement("div", { style: { fontSize: 11, color: T.muted } }, "\u5E73\u5747\u6E80\u8DB3\u5EA6 /5")),
+                    React.createElement("div", null,
+                        React.createElement("div", { style: { fontSize: 20, fontWeight: 700 } }, wFirst !== null && wFirst !== void 0 ? wFirst : '-',
+                            React.createElement("span", { style: { fontSize: 12 } }, " \u2192 "), wLast !== null && wLast !== void 0 ? wLast : '-'),
+                        React.createElement("div", { style: { fontSize: 11, color: T.muted } }, "\u4F53\u91CD kg\uFF08\u6708\u521D\u2192\u6700\u65B0\uFF09"))),
+                React.createElement("div", { style: S.title }, "\u6642\u9593\u914D\u5206\u306E\u5408\u8A08"),
+                CATEGORIES.map((c) => (React.createElement("div", { key: c.key, style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 } },
+                    React.createElement("div", { style: { width: 60, fontSize: 12, color: T.muted } }, c.label),
+                    React.createElement("div", { style: { flex: 1, height: 12, background: '#EFEFE9', borderRadius: 6, overflow: 'hidden' } },
+                        React.createElement("div", { style: { width: `${(totals[c.key] / maxTotal) * 100}%`, height: '100%', background: c.color } })),
+                    React.createElement("div", { style: { width: 44, fontSize: 12, textAlign: 'right' } },
+                        totals[c.key],
+                        "h")))),
+                monthRecs.some((r) => r.customLabel) && (React.createElement("div", { style: { marginTop: 12 } },
+                    React.createElement("div", { style: S.title }, "\u81EA\u7531\u8A18\u5165\u306E\u5185\u5BB9"),
+                    monthRecs.filter((r) => r.customLabel).map((r) => (React.createElement("div", { key: r.date, style: { fontSize: 12, color: T.ink, lineHeight: 1.7 } },
+                        React.createElement("span", { style: { color: T.muted } }, fmtJp(r.date)),
+                        "\u3000",
+                        r.customLabel))))),
+                React.createElement("div", { style: { display: 'flex', gap: 20, marginTop: 12, fontSize: 12, color: T.muted, lineHeight: 1.7 } },
+                    React.createElement("div", null,
+                        "\u7761\u7720\uFF1A",
+                        Object.entries(sleepCount).map(([k, v]) => `${k}${v}`).join(' / ')),
+                    React.createElement("div", null,
+                        "\u30E1\u30F3\u30BF\u30EB\uFF1A",
+                        Object.entries(mentalCount).map(([k, v]) => `${k}${v}`).join(' / ')))))),
+        React.createElement("div", { style: S.card },
+            React.createElement("div", { style: S.title }, "\u30A8\u30AF\u30B9\u30DD\u30FC\u30C8\uFF08\u3053\u306E\u6708\u3092\u30C6\u30AD\u30B9\u30C8\u306B\uFF09"),
+            React.createElement("div", { style: { fontSize: 12, color: T.muted, marginBottom: 8 } }, "\u30B3\u30D4\u30FC\u3057\u3066\u30E1\u30E2\u30A2\u30D7\u30EA\u3084\u30C1\u30E3\u30C3\u30C8\u306B\u8CBC\u308C\u307E\u3059\u3002\u63A7\u3048\u3068\u3057\u3066\u3082\u4F7F\u3048\u307E\u3059\u3002"),
+            React.createElement("div", { style: { display: 'flex', gap: 8 } },
+                React.createElement("button", { onClick: doExport, style: S.btn(true) }, "\u30C6\u30AD\u30B9\u30C8\u3092\u4F5C\u308B"),
+                exportText && React.createElement("button", { onClick: doCopy, style: S.btn(false) }, copied ? 'コピーしました' : 'コピー')),
+            exportText && (React.createElement("textarea", { readOnly: true, value: exportText, onFocus: (e) => e.target.select(), style: { ...S.input, width: '100%', boxSizing: 'border-box', minHeight: 160, marginTop: 10, fontSize: 12, fontFamily: 'ui-monospace, Menlo, monospace', lineHeight: 1.5 } }))),
+        React.createElement("div", { style: S.card },
+            React.createElement("div", { style: S.title }, "\u53D6\u308A\u8FBC\u307F\uFF08\u30A8\u30AF\u30B9\u30DD\u30FC\u30C8\u3057\u305F\u30C6\u30AD\u30B9\u30C8\u3092\u623B\u3059\uFF09"),
+            React.createElement("div", { style: { fontSize: 12, color: T.muted, marginBottom: 8 } }, "\u540C\u3058\u65E5\u4ED8\u304C\u3042\u308C\u3070\u4E0A\u66F8\u304D\u3057\u307E\u3059\u3002"),
+            React.createElement("textarea", { value: importText, onChange: (e) => setImportText(e.target.value), placeholder: "\u3053\u3053\u306B\u8CBC\u308A\u4ED8\u3051", style: { ...S.input, width: '100%', boxSizing: 'border-box', minHeight: 90, fontSize: 12, fontFamily: 'ui-monospace, Menlo, monospace' } }),
+            React.createElement("div", { style: { display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 } },
+                React.createElement("button", { onClick: doImport, disabled: !importText.trim(), style: { ...S.btn(true), opacity: importText.trim() ? 1 : 0.4 } }, "\u53D6\u308A\u8FBC\u3080"),
+                React.createElement("div", { style: { fontSize: 12, color: T.muted } }, importMsg)))));
+}
+// ========== メイン ==========
+function App() {
+    const [screen, setScreen] = useState('entry');
+    const today = todayStr();
+    const [date, setDate] = useState(today);
+    const [rec, setRec] = useState(newRecord(today));
+    const [loadingRec, setLoadingRec] = useState(true);
+    const [allRecords, setAllRecords] = useState([]);
+    const [storage, setStorage] = useState({ state: 'checking', error: '' }); // checking | ok | ng
+    const [saveState, setSaveState] = useState({ kind: 'idle', text: '' }); // idle | saving | saved | error
+    const [ym, setYm] = useState({ y: parseDate(today).getFullYear(), m: parseDate(today).getMonth() });
+    const dirtyRef = useRef(false);
+    const timerRef = useRef(null);
+    const recRef = useRef(rec);
+    recRef.current = rec;
+    const refreshAll = useCallback(async () => {
+        const list = await loadAllRecords();
+        setAllRecords(list);
+    }, []);
+    // 起動: ストレージ検査 → 全記録読込 → 今日の記録
+    useEffect(() => {
+        let alive = true;
+        (async () => {
+            const p = await probeStorage();
+            if (!alive)
+                return;
+            setStorage(p.ok ? { state: 'ok', error: '' } : { state: 'ng', error: p.error });
+            await refreshAll();
+            const { record } = await loadRecord(today);
+            if (!alive)
+                return;
+            setRec(record);
+            setLoadingRec(false);
+        })();
+        return () => { alive = false; };
+    }, [refreshAll, today]);
+    // 日付切替
+    const switchDate = async (ds) => {
+        await flushSave();
+        setLoadingRec(true);
+        setDate(ds);
+        const { record } = await loadRecord(ds);
+        setRec(record);
+        setLoadingRec(false);
+        setSaveState({ kind: 'idle', text: '' });
+        setScreen('entry');
+    };
+    const doSave = useCallback(async () => {
+        const r = recRef.current;
+        if (!dirtyRef.current)
+            return;
+        dirtyRef.current = false;
+        setSaveState({ kind: 'saving', text: '保存中…' });
+        const res = await saveRecord(r);
+        if (res.ok) {
+            setSaveState({ kind: 'saved', text: `保存しました ${nowClock()}` });
+            if (storage.state !== 'ok')
+                setStorage({ state: 'ok', error: '' });
+        }
+        else {
+            setSaveState({ kind: 'error', text: `端末に保存できませんでした（${res.error}）` });
+            if (storage.state === 'ok')
+                setStorage({ state: 'ng', error: res.error });
+        }
+        await refreshAll();
+    }, [refreshAll, storage.state]);
+    const flushSave = async () => {
+        if (timerRef.current) {
+            clearTimeout(timerRef.current);
+            timerRef.current = null;
+        }
+        await doSave();
+    };
+    // 変更 → 1秒後に自動保存
+    const up = (k, v) => {
+        setRec((prev) => ({ ...prev, [k]: v }));
+        dirtyRef.current = true;
+        setSaveState({ kind: 'idle', text: '未保存の変更あり' });
+        if (timerRef.current)
+            clearTimeout(timerRef.current);
+        timerRef.current = setTimeout(() => { timerRef.current = null; doSave(); }, 1000);
+    };
+    useEffect(() => () => { if (timerRef.current)
+        clearTimeout(timerRef.current); }, []);
+    const tabBtn = (key, label) => (React.createElement("button", { onClick: () => { if (key !== 'entry')
+            flushSave(); setScreen(key); }, style: { flex: 1, padding: '10px 0 8px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: screen === key ? 700 : 500, color: screen === key ? T.accent : T.muted, borderTop: screen === key ? `2px solid ${T.accent}` : '2px solid transparent' } }, label));
+    return (React.createElement("div", { style: S.app },
+        React.createElement("div", { style: S.wrap },
+            storage.state === 'checking' && (React.createElement("div", { style: { fontSize: 12, color: T.muted, background: '#ECECE6', borderRadius: 8, padding: '7px 10px', marginBottom: 10 } }, "\u7AEF\u672B\u4FDD\u5B58\u3092\u78BA\u8A8D\u4E2D\u2026")),
+            storage.state === 'ng' && (React.createElement("div", { style: { fontSize: 12, color: T.danger, background: T.dangerSoft, border: '1px solid #F3C4BE', borderRadius: 8, padding: '8px 10px', marginBottom: 10, lineHeight: 1.6 } },
+                "\u7AEF\u672B\u3078\u306E\u4FDD\u5B58\u304C\u4F7F\u3048\u307E\u305B\u3093\uFF08",
+                storage.error,
+                "\uFF09\u3002\u30D7\u30E9\u30A4\u30D9\u30FC\u30C8\u30D6\u30E9\u30A6\u30BA\u3084\u4FDD\u5B58\u5236\u9650\u304C\u539F\u56E0\u306E\u53EF\u80FD\u6027\u304C\u3042\u308A\u307E\u3059\u3002\u9589\u3058\u308B\u524D\u306B\u300C\u50BE\u5411\u300D\u304B\u3089\u30C6\u30AD\u30B9\u30C8\u3092\u4F5C\u3063\u3066\u30B3\u30D4\u30FC\u3057\u3066\u304F\u3060\u3055\u3044\u3002")),
+            screen === 'entry' && (React.createElement(React.Fragment, null,
+                React.createElement("div", { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 } },
+                    React.createElement("button", { onClick: () => switchDate(shiftDate(date, -1)), style: S.btn(false) }, "\u2039"),
+                    React.createElement("div", { style: { textAlign: 'center' } },
+                        React.createElement("div", { style: { fontSize: 18, fontWeight: 700 } }, fmtJp(date)),
+                        React.createElement("div", { style: { fontSize: 11, color: saveState.kind === 'error' ? T.danger : T.muted, minHeight: 14 } }, saveState.text || (storage.state === 'ok' ? '入力すると自動で保存します' : ''))),
+                    React.createElement("button", { onClick: () => switchDate(shiftDate(date, 1)), style: S.btn(false) }, "\u203A")),
+                date !== today && (React.createElement("div", { style: { textAlign: 'center', marginBottom: 10 } },
+                    React.createElement("button", { onClick: () => switchDate(today), style: { ...S.btn(false), fontSize: 12, padding: '5px 12px' } }, "\u4ECA\u65E5\u306B\u623B\u308B"))),
+                React.createElement(EntryScreen, { rec: rec, up: up, loading: loadingRec }),
+                React.createElement("div", { style: { marginTop: 12, textAlign: 'right' } },
+                    React.createElement("button", { onClick: flushSave, style: S.btn(true) }, "\u4ECA\u3059\u3050\u4FDD\u5B58")))),
+            screen === 'calendar' && (React.createElement(CalendarScreen, { ym: ym, setYm: setYm, records: allRecords, onPick: switchDate, today: today })),
+            screen === 'stats' && (React.createElement(StatsScreen, { ym: ym, setYm: setYm, records: allRecords, onImported: refreshAll, storageOk: storage.state === 'ok' }))),
+        React.createElement("div", { style: { position: 'fixed', left: 0, right: 0, bottom: 0, background: T.paper, borderTop: `1px solid ${T.line}`, display: 'flex', maxWidth: 520, margin: '0 auto', paddingBottom: 'env(safe-area-inset-bottom)' } },
+            tabBtn('entry', '記録'),
+            tabBtn('calendar', 'カレンダー'),
+            tabBtn('stats', '傾向'))));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
+
+</script>
+</body>
+</html>
