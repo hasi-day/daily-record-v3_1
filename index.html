@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta http-equiv="Cache-Control" content="no-cache">
 <title>デイリーレコード</title>
 <style>
   html, body { margin: 0; padding: 0; background: #F6F6F2; }
@@ -48,6 +49,7 @@ const SATISFACTION = [
     { key: 1, emoji: '😣' },
 ];
 const WEEKDAYS_MON = ['月', '火', '水', '木', '金', '土', '日'];
+const APP_VERSION = 'v3.7';
 const KEY_PREFIX = 'dr:';
 const PROBE_KEY = 'dr_probe';
 // ========== ユーティリティ ==========
@@ -831,7 +833,15 @@ function StatsScreen({ ym, setYm, records, onImported, storageOk }) {
             React.createElement("textarea", { value: importText, onChange: (e) => setImportText(e.target.value), placeholder: "\u3053\u3053\u306B\u8CBC\u308A\u4ED8\u3051", style: { ...S.input, width: '100%', boxSizing: 'border-box', minHeight: 90, fontSize: 12, fontFamily: 'ui-monospace, Menlo, monospace' } }),
             React.createElement("div", { style: { display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 } },
                 React.createElement("button", { onClick: doImport, disabled: !importText.trim(), style: { ...S.btn(true), opacity: importText.trim() ? 1 : 0.4 } }, "\u53D6\u308A\u8FBC\u3080"),
-                React.createElement("div", { style: { fontSize: 12, color: T.muted } }, importMsg)))));
+                React.createElement("div", { style: { fontSize: 12, color: T.muted } }, importMsg))),
+        React.createElement("div", { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 4px 0', fontSize: 12, color: T.muted } },
+            React.createElement("span", null,
+                "\u30C7\u30A4\u30EA\u30FC\u30EC\u30B3\u30FC\u30C9 ",
+                APP_VERSION),
+            React.createElement("button", { onClick: () => { try {
+                    window.location.reload();
+                }
+                catch (_b) { } }, style: { ...S.btn(false), padding: '5px 10px', fontSize: 12 } }, "\u518D\u8AAD\u307F\u8FBC\u307F\uFF08\u6700\u65B0\u7248\u3092\u53D6\u5F97\uFF09"))));
 }
 // ========== メイン ==========
 function App() {
