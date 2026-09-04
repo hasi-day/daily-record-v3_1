@@ -33,7 +33,7 @@ const CATEGORIES = [
     { key: 'kaji', label: '家事', color: '#AECF78' }, // 明るい黄緑
     { key: 'undo', label: '運動', color: '#E3D959' }, // 鮮やかな黄
     { key: 'suimin', label: '睡眠', color: '#545D9D' }, // 深い紺
-    { key: 'shokuji', label: '食事', color: '#2EB5C9' }, // 茶
+    { key: 'shokuji', label: '食事', color: '#2EB5C9' }, // キャラメル
     { key: 'nyuyoku', label: '入浴', color: '#B6C4E7' }, // 淡い水色
     { key: 'ido', label: '移動', color: '#9D9D9D' }, // 明るい灰
     { key: 'jiyu', label: '自由時間', color: '#6E44C9' }, // 紫
@@ -74,21 +74,35 @@ function newRecord(dateStr) {
         date: dateStr,
         exerciseDay: '', thruster: '',
         weight: '', bodyFat: '',
-        period: false, periodDay: '', pain: '',
+        period: false, periodDay: '', pain: '', medicine: '',
+        slotMin: 15, // blocks の1マス=15分 (旧データは30分なので読込時に変換)
         sleep: '', mental: '',
         vitamin: false, mineral: false,
         bowel: '', energy: '',
         memo: '', satisfaction: null,
         customLabel: '',
-        blocks: {}, // { "0".."47": categoryKey }  30分刻み
+        blocks: {}, // { "0".."95": categoryKey }  15分刻み
     };
 }
 function blocksToHours(blocks) {
     const t = {};
     CATEGORIES.forEach((c) => (t[c.key] = 0));
     Object.values(blocks || {}).forEach((k) => { if (t[k] !== undefined)
-        t[k] += 0.5; });
+        t[k] += 0.25; });
     return t;
+}
+// 旧形式(30分×48)のblocksを15分×96に変換
+function normalizeRecord(r) {
+    const out = { ...r };
+    if (out.slotMin !== 15) {
+        const nb = {};
+        Object.entries(out.blocks || {}).forEach(([i, k]) => { const n = Number(i); nb[String(n * 2)] = k; nb[String(n * 2 + 1)] = k; });
+        out.blocks = nb;
+        out.slotMin = 15;
+    }
+    if (out.periodDay !== '' && out.periodDay !== undefined)
+        out.period = true;
+    return out;
 }
 function isEmptyRecord(r) {
     const base = newRecord(r.date);
@@ -183,15 +197,15 @@ async function loadRecord(dateStr) {
         try {
             const parsed = JSON.parse(g.value);
             memCache[key] = g.value;
-            return { record: { ...newRecord(dateStr), ...parsed, date: dateStr }, from: 'storage' };
+            return { record: normalizeRecord({ ...newRecord(dateStr), ...parsed, date: dateStr }), from: 'storage' };
         }
-        catch ( /* fallthrough */_a) { /* fallthrough */ }
+        catch ( /* fallthrough */_b) { /* fallthrough */ }
     }
     if (memCache[key]) {
         try {
-            return { record: { ...newRecord(dateStr), ...JSON.parse(memCache[key]), date: dateStr }, from: 'memory' };
+            return { record: normalizeRecord({ ...newRecord(dateStr), ...JSON.parse(memCache[key]), date: dateStr }), from: 'memory' };
         }
-        catch ( /* fallthrough */_b) { /* fallthrough */ }
+        catch ( /* fallthrough */_c) { /* fallthrough */ }
     }
     return { record: newRecord(dateStr), from: 'new' };
 }
@@ -219,33 +233,56 @@ async function loadAllRecords() {
     const results = await Promise.all(dates.map((d) => loadRecord(d)));
     return results.map((r) => r.record).filter((r) => !isEmptyRecord(r));
 }
+// ========== 集計ヘルパ ==========
+function splitItems(str) {
+    return String(str || '').split(/[、,，\/／]+/).map((x) => x.trim()).filter(Boolean);
+}
+// 「頭痛薬3回」「胃薬×2」「ロキソニン 2回」のような末尾の回数を読む。回数がなければ1回。
+function parseItem(x) {
+    var _b;
+    const m = x.match(/^(.+?)\s*(?:[x×]\s*(\d+)|(\d+)\s*回)$/);
+    if (m)
+        return { name: m[1].trim(), n: parseInt((_b = m[2]) !== null && _b !== void 0 ? _b : m[3], 10) || 1 };
+    return { name: x, n: 1 };
+}
+function countItems(recs, field) {
+    const m = {};
+    recs.forEach((r) => splitItems(r[field]).forEach((x) => { const { name, n } = parseItem(x); if (name)
+        m[name] = (m[name] || 0) + n; }));
+    return Object.entries(m).sort((a, b) => b[1] - a[1]);
+}
+function fmtJpFull(dateStr) {
+    const d = parseDate(dateStr);
+    const w = ['日', '月', '火', '水', '木', '金', '土'][d.getDay()];
+    return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日(${w})`;
+}
 // ========== エクスポート / インポート ==========
-function exportMonthText(records, y, m) {
+function exportRangeText(records, from, to, label) {
     const recs = records
-        .filter((r) => { const d = parseDate(r.date); return d.getFullYear() === y && d.getMonth() === m; })
+        .filter((r) => (!from || r.date >= from) && (!to || r.date <= to))
         .sort((a, b) => a.date.localeCompare(b.date));
-    const head = `========================================\n${y}年${m + 1}月 デイリーレコード\n========================================\n\n`;
+    const head = `========================================\n${label} デイリーレコード\n========================================\n\n`;
     if (!recs.length)
-        return head + 'この月の記録はありません。\n';
+        return head + 'この範囲の記録はありません。\n';
     const body = recs.map((r) => {
-        var _a;
+        var _b;
         const h = blocksToHours(r.blocks);
         const L = [];
-        L.push(`【${fmtJp(r.date)}】`);
+        L.push(`【${fmtJpFull(r.date)}】`);
         L.push(`運動: ${r.exerciseDay || '-'}日目 / スラスター${r.thruster || 0}回`);
         L.push(`体重: ${r.weight || '-'}kg / 体脂肪率: ${r.bodyFat || '-'}%`);
-        L.push(`生理: ${r.period ? `${r.periodDay || '-'}日目` : 'なし'} / 痛み: ${r.pain || 'なし'}`);
+        L.push(`生理: ${r.periodDay ? `${r.periodDay}日目` : 'なし'}`);
+        L.push(`痛み: ${r.pain || 'なし'} / 薬: ${r.medicine || 'なし'}`);
         L.push(`睡眠: ${r.sleep || '-'} / メンタル: ${r.mental || '-'}`);
         L.push(`サプリ: ${[r.vitamin && 'ビタミン', r.mineral && 'ミネラル'].filter(Boolean).join('・') || 'なし'} / 排便: ${r.bowel || '-'} / 活力: ${r.energy || '-'}`);
         L.push(`原稿: 創作${h.sousaku}h / 二次創作${h.nijisou}h`);
         L.push(`時間配分: ${CATEGORIES.map((c) => `${c.label}${h[c.key]}h`).join(' / ')}`);
-        // 時間帯そのものも残す(取り込み時に円グラフを正確に復元するため)
         const slots = Object.entries(r.blocks || {}).sort((a, b) => Number(a[0]) - Number(b[0]));
         if (slots.length)
-            L.push(`時間帯: ${slots.map(([i, k]) => `${i}=${k}`).join(',')}`);
+            L.push(`時間帯15: ${slots.map(([i, k]) => `${i}=${k}`).join(',')}`);
         if (r.customLabel)
             L.push(`自由記入の内容: ${r.customLabel}`);
-        L.push(`満足度: ${r.satisfaction ? `${(_a = SATISFACTION.find((s) => s.key === r.satisfaction)) === null || _a === void 0 ? void 0 : _a.emoji} ${r.satisfaction}/5` : '-'}`);
+        L.push(`満足度: ${r.satisfaction ? `${(_b = SATISFACTION.find((s) => s.key === r.satisfaction)) === null || _b === void 0 ? void 0 : _b.emoji} ${r.satisfaction}/5` : '-'}`);
         if (r.memo)
             L.push(`メモ: ${r.memo.replace(/\n/g, ' ⏎ ')}`);
         return L.join('\n');
@@ -261,23 +298,25 @@ function exportMonthText(records, y, m) {
             satN++;
         }
     });
-    const tail = `\n\n========================================\n【${y}年${m + 1}月 サマリー】\n記録日数: ${recs.length}日\n${CATEGORIES.map((c) => `${c.label}: ${mt[c.key]}h`).join(' / ')}\n平均満足度: ${satN ? (satSum / satN).toFixed(1) : '-'}/5\n========================================\n`;
+    const periodDays = recs.filter((r) => r.periodDay).length;
+    const pains = countItems(recs, 'pain'), meds = countItems(recs, 'medicine');
+    const tail = `\n\n========================================\n【${label} サマリー】\n記録日数: ${recs.length}日\n${CATEGORIES.map((c) => `${c.label}: ${mt[c.key]}h`).join(' / ')}\n平均満足度: ${satN ? (satSum / satN).toFixed(1) : '-'}/5\n生理: ${periodDays}日\n痛み: ${pains.length ? pains.map(([k, v]) => `${k}${v}回`).join(' / ') : 'なし'}\n薬: ${meds.length ? meds.map(([k, v]) => `${k}${v}回`).join(' / ') : 'なし'}\n========================================\n`;
     return head + body + tail;
 }
 function parseImportText(text) {
     const yearMatch = text.match(/(\d{4})年\s*(\d{1,2})月\s*デイリーレコード/);
     const headerYear = yearMatch ? parseInt(yearMatch[1], 10) : null;
     const now = new Date();
-    const blocksText = text.split(/(?=【\d+月\d+日)/).filter((b) => /^【\d+月\d+日/.test(b.trim()));
+    const blocksText = text.split(/(?=【(?:\d{4}年)?\d+月\d+日)/).filter((b) => /^【(?:\d{4}年)?\d+月\d+日/.test(b.trim()));
     const out = [];
     for (const raw of blocksText) {
         const block = raw.split(/={10,}/)[0]; // サマリー以降は切り捨て
-        const dm = block.match(/【(\d+)月(\d+)日/);
+        const dm = block.match(/【(?:(\d{4})年)?(\d+)月(\d+)日/);
         if (!dm)
             continue;
-        const month = parseInt(dm[1], 10), day = parseInt(dm[2], 10);
-        let year = headerYear !== null && headerYear !== void 0 ? headerYear : now.getFullYear();
-        if (!headerYear && month > now.getMonth() + 2)
+        const month = parseInt(dm[2], 10), day = parseInt(dm[3], 10);
+        let year = dm[1] ? parseInt(dm[1], 10) : (headerYear !== null && headerYear !== void 0 ? headerYear : now.getFullYear());
+        if (!dm[1] && !headerYear && month > now.getMonth() + 2)
             year -= 1;
         const rec = newRecord(`${year}-${pad2(month)}-${pad2(day)}`);
         const clean = (v) => (v === '-' || v === undefined ? '' : v);
@@ -290,13 +329,21 @@ function parseImportText(text) {
             rec.weight = clean(m[1]);
             rec.bodyFat = clean(m[2]);
         }
-        if ((m = block.match(/生理:\s*(.+?)\s*\/\s*痛み:\s*(.*)/))) {
-            if (m[1] !== 'なし') {
+        if ((m = block.match(/生理:\s*([^\/\n]+)/))) {
+            const v = m[1].trim();
+            if (v !== 'なし') {
                 rec.period = true;
-                const dd = m[1].match(/(\S+?)日目/);
+                const dd = v.match(/(\S+?)日目/);
                 rec.periodDay = dd ? clean(dd[1]) : '';
             }
-            rec.pain = m[2].trim() === 'なし' ? '' : m[2].trim();
+        }
+        if ((m = block.match(/痛み:\s*([^\/\n]*)(?:\/\s*薬:\s*(.*))?/))) {
+            const pv = m[1].trim();
+            rec.pain = pv === 'なし' ? '' : pv;
+            if (m[2] !== undefined) {
+                const mv = m[2].trim();
+                rec.medicine = mv === 'なし' ? '' : mv;
+            }
         }
         if ((m = block.match(/睡眠:\s*(\S+?)\s*\/\s*メンタル:\s*(\S+)/))) {
             rec.sleep = clean(m[1]);
@@ -308,11 +355,22 @@ function parseImportText(text) {
             rec.bowel = clean(m[2]);
             rec.energy = clean(m[3]);
         }
-        if ((m = block.match(/時間帯:\s*(.+)/))) {
+        if ((m = block.match(/時間帯15:\s*(.+)/))) {
             m[1].split(',').forEach((pair) => {
                 const [i, k] = pair.trim().split('=');
                 if (i !== undefined && CAT_MAP[k])
                     rec.blocks[String(parseInt(i, 10))] = k;
+            });
+        }
+        else if ((m = block.match(/時間帯:\s*(.+)/))) {
+            // 旧形式(30分単位)→15分×2に展開
+            m[1].split(',').forEach((pair) => {
+                const [i, k] = pair.trim().split('=');
+                if (i !== undefined && CAT_MAP[k]) {
+                    const n = parseInt(i, 10);
+                    rec.blocks[String(n * 2)] = k;
+                    rec.blocks[String(n * 2 + 1)] = k;
+                }
             });
         }
         else if ((m = block.match(/時間配分:\s*(.+)/))) {
@@ -325,8 +383,8 @@ function parseImportText(text) {
                 const cat = CATEGORIES.find((c) => c.label === mm[1].trim());
                 if (!cat)
                     return;
-                const n = Math.round(parseFloat(mm[2]) * 2);
-                for (let j = 0; j < n && slot < 48; j++)
+                const n = Math.round(parseFloat(mm[2]) * 4);
+                for (let j = 0; j < n && slot < 96; j++)
                     rec.blocks[String(slot++)] = cat.key;
             });
         }
@@ -391,11 +449,12 @@ function slotFromPoint(clientX, clientY, svgEl, size) {
     let ang = Math.atan2(y, x) + Math.PI / 2; // 0時を真上に
     if (ang < 0)
         ang += 2 * Math.PI;
-    return Math.floor((ang / (2 * Math.PI)) * 48) % 48;
+    return Math.floor((ang / (2 * Math.PI)) * 96) % 96;
 }
 function TimeWheel({ blocks, onChange, customLabel, onCustomLabel }) {
     const [cat, setCat] = useState('sousaku');
     const [rangeMode, setRangeMode] = useState(false);
+    const [unit, setUnit] = useState(30); // 塗り単位(分): 30 or 15
     const [anchor, setAnchor] = useState(null);
     const svgRef = useRef(null);
     const dragRef = useRef({ active: false, start: null, moved: false, draft: null });
@@ -403,18 +462,22 @@ function TimeWheel({ blocks, onChange, customLabel, onCustomLabel }) {
     const filled = Object.keys(blocks || {}).length;
     const size = 320, cx = size / 2, cy = size / 2, R = size / 2 - 22, rIn = 44;
     const wedge = (i) => {
-        const a0 = (i / 48) * 2 * Math.PI - Math.PI / 2;
-        const a1 = ((i + 1) / 48) * 2 * Math.PI - Math.PI / 2;
+        const a0 = (i / 96) * 2 * Math.PI - Math.PI / 2;
+        const a1 = ((i + 1) / 96) * 2 * Math.PI - Math.PI / 2;
         const p = (r, a) => `${cx + r * Math.cos(a)} ${cy + r * Math.sin(a)}`;
         return `M ${p(rIn, a0)} L ${p(R, a0)} A ${R} ${R} 0 0 1 ${p(R, a1)} L ${p(rIn, a1)} A ${rIn} ${rIn} 0 0 0 ${p(rIn, a0)} Z`;
     };
+    // 単位が30分のときは 2マス(偶数始まり)をまとめて扱う
+    const cells = (i) => (unit === 30 ? [i - (i % 2), i - (i % 2) + 1] : [i]);
     const commitTap = (i) => {
         const next = { ...(blocks || {}) };
         if (!rangeMode) {
-            if (next[i] === cat)
-                delete next[i];
+            const cs = cells(i);
+            const allSame = cs.every((c) => next[c] === cat);
+            cs.forEach((c) => { if (allSame)
+                delete next[c];
             else
-                next[i] = cat;
+                next[c] = cat; });
             onChange(next);
             return;
         }
@@ -422,18 +485,22 @@ function TimeWheel({ blocks, onChange, customLabel, onCustomLabel }) {
             setAnchor(i);
             return;
         }
-        const [a, b] = anchor <= i ? [anchor, i] : [i, anchor];
+        let [a, b] = anchor <= i ? [anchor, i] : [i, anchor];
+        if (unit === 30) {
+            a = a - (a % 2);
+            b = b - (b % 2) + 1;
+        }
         for (let j = a; j <= b; j++)
             next[j] = cat;
         onChange(next);
         setAnchor(null);
     };
     const onDown = (e) => {
-        var _a, _b;
+        var _b, _c;
         const i = slotFromPoint(e.clientX, e.clientY, svgRef.current, size);
         if (i === null)
             return;
-        (_b = (_a = e.currentTarget).setPointerCapture) === null || _b === void 0 ? void 0 : _b.call(_a, e.pointerId);
+        (_c = (_b = e.currentTarget).setPointerCapture) === null || _c === void 0 ? void 0 : _c.call(_b, e.pointerId);
         dragRef.current = { active: true, start: i, moved: false, draft: { ...(blocks || {}) } };
     };
     const onMove = (e) => {
@@ -445,9 +512,9 @@ function TimeWheel({ blocks, onChange, customLabel, onCustomLabel }) {
             return;
         if (!d.moved) {
             d.moved = true;
-            d.draft[d.start] = cat;
+            cells(d.start).forEach((c) => { d.draft[c] = cat; });
         }
-        d.draft[i] = cat;
+        cells(i).forEach((c) => { d.draft[c] = cat; });
         onChange({ ...d.draft });
     };
     const onUp = () => {
@@ -473,15 +540,25 @@ function TimeWheel({ blocks, onChange, customLabel, onCustomLabel }) {
             React.createElement("button", { onClick: () => { setRangeMode(!rangeMode); setAnchor(null); }, style: { ...S.chip(rangeMode), fontSize: 12 } },
                 "\u7BC4\u56F2\u5857\u308A",
                 rangeMode ? '：ON' : '：OFF'),
+            React.createElement("button", { onClick: () => { setUnit(unit === 30 ? 15 : 30); setAnchor(null); }, style: { ...S.chip(unit === 15), fontSize: 12 } },
+                unit,
+                "\u5206\u5358\u4F4D"),
             React.createElement("div", { style: { fontSize: 12, color: T.muted } }, rangeMode
-                ? (anchor !== null ? `${Math.floor(anchor / 2)}:${anchor % 2 ? '30' : '00'} から… 終点をタップ` : '始点をタップ')
+                ? (anchor !== null ? `${Math.floor(anchor / 4)}:${pad2((anchor % 4) * 15)} から… 終点をタップ` : '始点をタップ')
                 : 'タップで塗る／もう一度で消す。ドラッグで連続塗り')),
-        React.createElement("svg", { ref: svgRef, viewBox: `0 0 ${size} ${size}`, style: { width: '100%', maxWidth: 360, display: 'block', margin: '0 auto', touchAction: 'none', userSelect: 'none' }, onPointerDown: onDown, onPointerMove: onMove, onPointerUp: onUp, onPointerCancel: onUp },
-            Array.from({ length: 48 }).map((_, i) => {
+        React.createElement("svg", { ref: svgRef, viewBox: `0 0 ${size} ${size}`, style: { width: '100%', maxWidth: 420, display: 'block', margin: '0 auto', touchAction: 'none', userSelect: 'none' }, onPointerDown: onDown, onPointerMove: onMove, onPointerUp: onUp, onPointerCancel: onUp },
+            Array.from({ length: 96 }).map((_, i) => {
                 const k = blocks === null || blocks === void 0 ? void 0 : blocks[i];
                 const c = k ? CAT_MAP[k] : null;
-                const isAnchor = anchor === i;
-                return React.createElement("path", { key: i, d: wedge(i), fill: c ? c.color : '#EDEDE6', stroke: isAnchor ? T.ink : '#fff', strokeWidth: isAnchor ? 2.5 : 1 });
+                const isAnchor = anchor === i || (unit === 30 && anchor !== null && Math.floor(anchor / 2) === Math.floor(i / 2));
+                const fill = c ? c.color : '#EDEDE6';
+                return React.createElement("path", { key: i, d: wedge(i), fill: fill, stroke: isAnchor ? T.ink : (unit === 15 ? '#fff' : fill), strokeWidth: isAnchor ? 2 : 0.6 });
+            }),
+            Array.from({ length: 96 }).map((_, j) => {
+                if (j % 2 === 1 && unit !== 15)
+                    return null;
+                const a = (j / 96) * 2 * Math.PI - Math.PI / 2;
+                return React.createElement("line", { key: `t${j}`, x1: cx + rIn * Math.cos(a), y1: cy + rIn * Math.sin(a), x2: cx + R * Math.cos(a), y2: cy + R * Math.sin(a), stroke: "#fff", strokeWidth: j % 4 === 0 ? 1.6 : j % 2 === 0 ? 1.2 : 0.7, pointerEvents: "none" });
             }),
             Array.from({ length: 24 }).map((_, h) => {
                 const a = (h / 24) * 2 * Math.PI - Math.PI / 2;
@@ -490,7 +567,7 @@ function TimeWheel({ blocks, onChange, customLabel, onCustomLabel }) {
             }),
             React.createElement("circle", { cx: cx, cy: cy, r: rIn - 2, fill: "#F6F6F2", stroke: T.line }),
             React.createElement("text", { x: cx, y: cy - 6, fontSize: 11, fill: T.muted, textAnchor: "middle" },
-                filled / 2,
+                filled / 4,
                 "h"),
             React.createElement("text", { x: cx, y: cy + 9, fontSize: 9, fill: T.muted, textAnchor: "middle" }, "/ 24h")),
         (cat === 'custom' || hours.custom > 0) && (React.createElement("div", { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 } },
@@ -515,11 +592,14 @@ function EntryScreen({ rec, up, loading }) {
                 React.createElement("div", { style: { display: 'flex', gap: 10, flexWrap: 'wrap' } },
                     React.createElement(NumIn, { value: rec.weight, onChange: (v) => up('weight', v), w: 64, suffix: "kg", ph: "0.0" }),
                     React.createElement(NumIn, { value: rec.bodyFat, onChange: (v) => up('bodyFat', v), w: 64, suffix: "%", ph: "0.0" }))),
-            React.createElement(Row, { label: "\u751F\u7406/\u75DB\u307F" },
-                React.createElement("div", { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
-                    React.createElement(Check, { on: rec.period, onToggle: () => up('period', !rec.period) }),
-                    rec.period && React.createElement(NumIn, { value: rec.periodDay, onChange: (v) => up('periodDay', v), w: 50, suffix: "\u65E5\u76EE" }),
-                    React.createElement("input", { value: rec.pain, placeholder: "\u75DB\u307F\u306E\u7B87\u6240", onChange: (e) => up('pain', e.target.value), style: { ...S.input, width: 120 } }))),
+            React.createElement(Row, { label: "\u751F\u7406" },
+                React.createElement(NumIn, { value: rec.periodDay, onChange: (v) => { up('periodDay', v); up('period', v !== ''); }, w: 56, suffix: "\u65E5\u76EE\uFF08\u306A\u3057\u306F\u7A7A\u6B04\uFF09", ph: "" })),
+            React.createElement(Row, { label: "\u75DB\u307F" },
+                React.createElement("div", { style: { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' } },
+                    React.createElement("input", { value: rec.pain, placeholder: "\u982D\u75DB\u3001\u8170\u306A\u3069", onChange: (e) => up('pain', e.target.value), style: { ...S.input, width: 130 } }),
+                    React.createElement("span", { style: { display: 'inline-flex', alignItems: 'center', gap: 5 } },
+                        React.createElement("span", { style: { fontSize: 12, color: T.muted } }, "\u85AC"),
+                        React.createElement("input", { value: rec.medicine, placeholder: "\u982D\u75DB\u85AC\u306A\u3069", onChange: (e) => up('medicine', e.target.value), style: { ...S.input, width: 130 } })))),
             React.createElement(Row, { label: "\u7761\u7720" },
                 React.createElement(Chips, { options: ['過多', '適度', '不足'], value: rec.sleep, onChange: (v) => up('sleep', v) })),
             React.createElement(Row, { label: "\u30E1\u30F3\u30BF\u30EB" },
@@ -584,7 +664,7 @@ function CalendarScreen({ ym, setYm, records, onPick, today }) {
             React.createElement("div", { style: { display: 'grid', gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', gap: 4 } },
                 WEEKDAYS_MON.map((w, i) => (React.createElement("div", { key: w, style: { textAlign: 'center', fontSize: 11, color: i >= 5 ? T.danger : T.muted, paddingBottom: 4 } }, w))),
                 cells.map((d, idx) => {
-                    var _a;
+                    var _b;
                     if (d === null)
                         return React.createElement("div", { key: `e${idx}` });
                     const ds = `${ym.y}-${pad2(ym.m + 1)}-${pad2(d)}`;
@@ -597,15 +677,17 @@ function CalendarScreen({ ym, setYm, records, onPick, today }) {
                             background: r ? T.accentSoft : '#fff', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'space-between',
                         } },
                         React.createElement("div", { style: { fontSize: 12, fontWeight: isToday ? 700 : 500, color: T.ink } }, d),
-                        React.createElement("div", { style: { fontSize: 16, lineHeight: 1 } }, (r === null || r === void 0 ? void 0 : r.satisfaction) ? (_a = SATISFACTION.find((s) => s.key === r.satisfaction)) === null || _a === void 0 ? void 0 : _a.emoji : ''),
+                        React.createElement("div", { style: { fontSize: 16, lineHeight: 1 } }, (r === null || r === void 0 ? void 0 : r.satisfaction) ? (_b = SATISFACTION.find((s) => s.key === r.satisfaction)) === null || _b === void 0 ? void 0 : _b.emoji : ''),
                         React.createElement("div", { style: { fontSize: 10, color: CAT_MAP.sousaku.color, fontWeight: 700, minHeight: 12, whiteSpace: 'nowrap' } }, h && h.sousaku > 0 ? `${h.sousaku}h` : '')));
                 })),
-            React.createElement("div", { style: { fontSize: 11, color: T.muted, marginTop: 8 } }, "\u65E5\u4ED8\u3092\u30BF\u30C3\u30D7\u3067\u305D\u306E\u65E5\u306E\u8A18\u9332\u3078\u3002\u6570\u5B57\u306F\u5275\u4F5C\u6642\u9593\u3002"))));
+            React.createElement("div", { style: { fontSize: 11, color: T.muted, marginTop: 10 } }, "\u65E5\u4ED8\u3092\u30BF\u30C3\u30D7\u3067\u305D\u306E\u65E5\u306E\u8A18\u9332\u3078\u3002\u6570\u5B57\u306F\u5275\u4F5C\u6642\u9593\u3002"))));
 }
 // ========== 傾向画面 ==========
 function StatsScreen({ ym, setYm, records, onImported, storageOk }) {
-    var _a, _b;
+    var _b, _c;
     const [exportText, setExportText] = useState('');
+    const [expFrom, setExpFrom] = useState('');
+    const [expTo, setExpTo] = useState('');
     const [importText, setImportText] = useState('');
     const [importMsg, setImportMsg] = useState('');
     const [copied, setCopied] = useState(false);
@@ -622,19 +704,29 @@ function StatsScreen({ ym, setYm, records, onImported, storageOk }) {
     const sat = monthRecs.filter((r) => r.satisfaction);
     const avgSat = sat.length ? (sat.reduce((a, r) => a + r.satisfaction, 0) / sat.length).toFixed(1) : '-';
     const weights = monthRecs.filter((r) => r.weight !== '' && !isNaN(parseFloat(r.weight)));
-    const wFirst = (_a = weights[0]) === null || _a === void 0 ? void 0 : _a.weight, wLast = (_b = weights[weights.length - 1]) === null || _b === void 0 ? void 0 : _b.weight;
+    const wFirst = (_b = weights[0]) === null || _b === void 0 ? void 0 : _b.weight, wLast = (_c = weights[weights.length - 1]) === null || _c === void 0 ? void 0 : _c.weight;
     const sleepCount = { 過多: 0, 適度: 0, 不足: 0 };
     const mentalCount = { 好調: 0, 普通: 0, 不調: 0 };
     monthRecs.forEach((r) => { if (sleepCount[r.sleep] !== undefined)
         sleepCount[r.sleep]++; if (mentalCount[r.mental] !== undefined)
         mentalCount[r.mental]++; });
-    const doExport = () => { setExportText(exportMonthText(records, ym.y, ym.m)); setCopied(false); };
+    const monthFrom = `${ym.y}-${pad2(ym.m + 1)}-01`;
+    const monthTo = `${ym.y}-${pad2(ym.m + 1)}-${pad2(new Date(ym.y, ym.m + 1, 0).getDate())}`;
+    const runExport = (from, to, label) => { setExportText(exportRangeText(records, from, to, label)); setCopied(false); };
+    const exportMonth = () => runExport(monthFrom, monthTo, `${ym.y}年${ym.m + 1}月`);
+    const exportToday = () => { const t = todayStr(); runExport(t, t, fmtJpFull(t)); };
+    const exportRange = () => { if (!expFrom || !expTo)
+        return; runExport(expFrom, expTo, `${fmtJpFull(expFrom)}〜${fmtJpFull(expTo)}`); };
+    const exportAll = () => runExport(null, null, '全期間');
+    const periodDays = monthRecs.filter((r) => r.periodDay).length;
+    const painCounts = countItems(monthRecs, 'pain');
+    const medCounts = countItems(monthRecs, 'medicine');
     const doCopy = async () => {
         try {
             await navigator.clipboard.writeText(exportText);
             setCopied(true);
         }
-        catch (_a) {
+        catch (_b) {
             setCopied(false);
         }
     };
@@ -691,6 +783,21 @@ function StatsScreen({ ym, setYm, records, onImported, storageOk }) {
                     React.createElement("div", { style: { width: 44, fontSize: 12, textAlign: 'right' } },
                         totals[c.key],
                         "h")))),
+                React.createElement("div", { style: { marginTop: 12, fontSize: 12, lineHeight: 1.8 } },
+                    React.createElement("div", { style: S.title }, "\u4F53\u8ABF"),
+                    React.createElement("div", null,
+                        React.createElement("span", { style: { color: T.muted } }, "\u751F\u7406"),
+                        "\u3000",
+                        periodDays,
+                        "\u65E5"),
+                    React.createElement("div", null,
+                        React.createElement("span", { style: { color: T.muted } }, "\u75DB\u307F"),
+                        "\u3000",
+                        painCounts.length ? painCounts.map(([k, v]) => `${k} ${v}回`).join(' / ') : 'なし'),
+                    React.createElement("div", null,
+                        React.createElement("span", { style: { color: T.muted } }, "\u85AC"),
+                        "\u3000",
+                        medCounts.length ? medCounts.map(([k, v]) => `${k} ${v}回`).join(' / ') : 'なし')),
                 monthRecs.some((r) => r.customLabel) && (React.createElement("div", { style: { marginTop: 12 } },
                     React.createElement("div", { style: S.title }, "\u81EA\u7531\u8A18\u5165\u306E\u5185\u5BB9"),
                     monthRecs.filter((r) => r.customLabel).map((r) => (React.createElement("div", { key: r.date, style: { fontSize: 12, color: T.ink, lineHeight: 1.7 } },
@@ -705,11 +812,18 @@ function StatsScreen({ ym, setYm, records, onImported, storageOk }) {
                         "\u30E1\u30F3\u30BF\u30EB\uFF1A",
                         Object.entries(mentalCount).map(([k, v]) => `${k}${v}`).join(' / ')))))),
         React.createElement("div", { style: S.card },
-            React.createElement("div", { style: S.title }, "\u30A8\u30AF\u30B9\u30DD\u30FC\u30C8\uFF08\u3053\u306E\u6708\u3092\u30C6\u30AD\u30B9\u30C8\u306B\uFF09"),
+            React.createElement("div", { style: S.title }, "\u30A8\u30AF\u30B9\u30DD\u30FC\u30C8\uFF08\u30C6\u30AD\u30B9\u30C8\u306B\u66F8\u304D\u51FA\u3057\uFF09"),
             React.createElement("div", { style: { fontSize: 12, color: T.muted, marginBottom: 8 } }, "\u30B3\u30D4\u30FC\u3057\u3066\u30E1\u30E2\u30A2\u30D7\u30EA\u3084\u30C1\u30E3\u30C3\u30C8\u306B\u8CBC\u308C\u307E\u3059\u3002\u63A7\u3048\u3068\u3057\u3066\u3082\u4F7F\u3048\u307E\u3059\u3002"),
-            React.createElement("div", { style: { display: 'flex', gap: 8 } },
-                React.createElement("button", { onClick: doExport, style: S.btn(true) }, "\u30C6\u30AD\u30B9\u30C8\u3092\u4F5C\u308B"),
-                exportText && React.createElement("button", { onClick: doCopy, style: S.btn(false) }, copied ? 'コピーしました' : 'コピー')),
+            React.createElement("div", { style: { display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 } },
+                React.createElement("button", { onClick: exportMonth, style: S.btn(true) }, "\u3053\u306E\u6708"),
+                React.createElement("button", { onClick: exportToday, style: S.btn(false) }, "\u4ECA\u65E5"),
+                React.createElement("button", { onClick: exportAll, style: S.btn(false) }, "\u5168\u90E8")),
+            React.createElement("div", { style: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 8 } },
+                React.createElement("input", { type: "date", value: expFrom, onChange: (e) => setExpFrom(e.target.value), style: { ...S.input, fontSize: 13, padding: '5px 7px' } }),
+                React.createElement("span", { style: { fontSize: 12, color: T.muted } }, "\u301C"),
+                React.createElement("input", { type: "date", value: expTo, onChange: (e) => setExpTo(e.target.value), style: { ...S.input, fontSize: 13, padding: '5px 7px' } }),
+                React.createElement("button", { onClick: exportRange, disabled: !expFrom || !expTo, style: { ...S.btn(false), opacity: expFrom && expTo ? 1 : 0.4 } }, "\u671F\u9593\u3067\u51FA\u3059")),
+            exportText && React.createElement("button", { onClick: doCopy, style: S.btn(false) }, copied ? 'コピーしました' : 'コピー'),
             exportText && (React.createElement("textarea", { readOnly: true, value: exportText, onFocus: (e) => e.target.select(), style: { ...S.input, width: '100%', boxSizing: 'border-box', minHeight: 160, marginTop: 10, fontSize: 12, fontFamily: 'ui-monospace, Menlo, monospace', lineHeight: 1.5 } }))),
         React.createElement("div", { style: S.card },
             React.createElement("div", { style: S.title }, "\u53D6\u308A\u8FBC\u307F\uFF08\u30A8\u30AF\u30B9\u30DD\u30FC\u30C8\u3057\u305F\u30C6\u30AD\u30B9\u30C8\u3092\u623B\u3059\uFF09"),
