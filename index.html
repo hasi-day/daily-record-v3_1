@@ -38,7 +38,8 @@ const CATEGORIES = [
     { key: 'nyuyoku', label: '入浴', color: '#B6C4E7' }, // 淡い水色
     { key: 'ido', label: '移動', color: '#9D9D9D' }, // 明るい灰
     { key: 'jiyu', label: '自由時間', color: '#6E44C9' }, // 紫
-    { key: 'custom', label: '自由記入', color: '#D894AD' }, // 淡いピンク
+    { key: 'custom', label: '自由記入(外出)', color: '#D894AD' }, // 淡いピンク
+    { key: 'customhome', label: '自由記入(在宅)', color: '#B08968' }, // トープ（茶がかった灰）
 ];
 const CAT_MAP = Object.fromEntries(CATEGORIES.map((c) => [c.key, c]));
 const SATISFACTION = [
@@ -49,7 +50,7 @@ const SATISFACTION = [
     { key: 1, emoji: '😣' },
 ];
 const WEEKDAYS_MON = ['月', '火', '水', '木', '金', '土', '日'];
-const APP_VERSION = 'v3.7';
+const APP_VERSION = 'v3.10';
 const KEY_PREFIX = 'dr:';
 const PROBE_KEY = 'dr_probe';
 // ========== ユーティリティ ==========
@@ -82,7 +83,7 @@ function newRecord(dateStr) {
         vitamin: false, mineral: false,
         bowel: '', energy: '',
         memo: '', satisfaction: null,
-        customLabel: '',
+        customLabel: '', customHomeLabel: '',
         blocks: {}, // { "0".."95": categoryKey }  15分刻み
     };
 }
@@ -235,6 +236,22 @@ async function loadAllRecords() {
     const results = await Promise.all(dates.map((d) => loadRecord(d)));
     return results.map((r) => r.record).filter((r) => !isEmptyRecord(r));
 }
+// 日の種別: 補修あり=仕事外出 / 自由記入あり=私的外出 / それ以外=在宅
+const DAY_KIND = {
+    work: { label: '仕事', bg: '#E4F0E6', border: '#8FBF9A' },
+    out: { label: '外出', bg: '#FCE7EF', border: '#E7A6BE' },
+    home: { label: '在宅', bg: '#E6EBF7', border: '#DEDED6' },
+};
+function dayKind(r) {
+    if (!r)
+        return null;
+    const h = blocksToHours(r.blocks);
+    if (h.hoshu > 0)
+        return 'work';
+    if (h.custom > 0)
+        return 'out';
+    return 'home';
+}
 // ========== 集計ヘルパ ==========
 function splitItems(str) {
     return String(str || '').split(/[、,，\/／]+/).map((x) => x.trim()).filter(Boolean);
@@ -283,7 +300,9 @@ function exportRangeText(records, from, to, label) {
         if (slots.length)
             L.push(`時間帯15: ${slots.map(([i, k]) => `${i}=${k}`).join(',')}`);
         if (r.customLabel)
-            L.push(`自由記入の内容: ${r.customLabel}`);
+            L.push(`自由記入(外出): ${r.customLabel}`);
+        if (r.customHomeLabel)
+            L.push(`自由記入(在宅): ${r.customHomeLabel}`);
         L.push(`満足度: ${r.satisfaction ? `${(_b = SATISFACTION.find((s) => s.key === r.satisfaction)) === null || _b === void 0 ? void 0 : _b.emoji} ${r.satisfaction}/5` : '-'}`);
         if (r.memo)
             L.push(`メモ: ${r.memo.replace(/\n/g, ' ⏎ ')}`);
@@ -382,7 +401,8 @@ function parseImportText(text) {
                 const mm = seg.trim().match(/^(.+?)([\d.]+)h$/);
                 if (!mm)
                     return;
-                const cat = CATEGORIES.find((c) => c.label === mm[1].trim());
+                const lbl = mm[1].trim();
+                const cat = CATEGORIES.find((c) => c.label === lbl) || (lbl === '自由記入' ? CAT_MAP.custom : null);
                 if (!cat)
                     return;
                 const n = Math.round(parseFloat(mm[2]) * 4);
@@ -392,6 +412,10 @@ function parseImportText(text) {
         }
         if ((m = block.match(/自由記入の内容:\s*(.*)/)))
             rec.customLabel = m[1].trim();
+        if ((m = block.match(/自由記入\(外出\):\s*(.*)/)))
+            rec.customLabel = m[1].trim();
+        if ((m = block.match(/自由記入\(在宅\):\s*(.*)/)))
+            rec.customHomeLabel = m[1].trim();
         if ((m = block.match(/満足度:\s*\S*\s*(\d)\/5/)))
             rec.satisfaction = parseInt(m[1], 10);
         if ((m = block.match(/メモ:\s*(.*)/)))
@@ -453,7 +477,7 @@ function slotFromPoint(clientX, clientY, svgEl, size) {
         ang += 2 * Math.PI;
     return Math.floor((ang / (2 * Math.PI)) * 96) % 96;
 }
-function TimeWheel({ blocks, onChange, customLabel, onCustomLabel }) {
+function TimeWheel({ blocks, onChange, customLabel, onCustomLabel, customHomeLabel, onCustomHomeLabel }) {
     const [cat, setCat] = useState('sousaku');
     const [rangeMode, setRangeMode] = useState(false);
     const [unit, setUnit] = useState(30); // 塗り単位(分): 30 or 15
@@ -574,7 +598,10 @@ function TimeWheel({ blocks, onChange, customLabel, onCustomLabel }) {
             React.createElement("text", { x: cx, y: cy + 9, fontSize: 9, fill: T.muted, textAnchor: "middle" }, "/ 24h")),
         (cat === 'custom' || hours.custom > 0) && (React.createElement("div", { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 } },
             React.createElement("span", { style: { width: 11, height: 11, borderRadius: 999, background: CAT_MAP.custom.color, flexShrink: 0 } }),
-            React.createElement("input", { value: customLabel || '', onChange: (e) => onCustomLabel(e.target.value), placeholder: "\u81EA\u7531\u8A18\u5165\u306E\u5185\u5BB9\uFF08\u6620\u753B\u3001\u5C55\u793A\u3001\u30AB\u30D5\u30A7\u306A\u3069\uFF09", style: { ...S.input, flex: 1, fontSize: 14 } }))),
+            React.createElement("input", { value: customLabel || '', onChange: (e) => onCustomLabel(e.target.value), placeholder: "\u5916\u51FA\u306E\u5185\u5BB9\uFF08\u6620\u753B\u3001\u5C55\u793A\u3001\u30AB\u30D5\u30A7\u306A\u3069\uFF09", style: { ...S.input, flex: 1, fontSize: 14 } }))),
+        (cat === 'customhome' || hours.customhome > 0) && (React.createElement("div", { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 } },
+            React.createElement("span", { style: { width: 11, height: 11, borderRadius: 999, background: CAT_MAP.customhome.color, flexShrink: 0 } }),
+            React.createElement("input", { value: customHomeLabel || '', onChange: (e) => onCustomHomeLabel(e.target.value), placeholder: "\u5728\u5B85\u306E\u5185\u5BB9\uFF08\u30B2\u30FC\u30E0\u3001\u8AAD\u66F8\u3001\u914D\u4FE1\u306A\u3069\uFF09", style: { ...S.input, flex: 1, fontSize: 14 } }))),
         filled > 0 && (React.createElement("div", { style: { textAlign: 'right', marginTop: 4 } },
             React.createElement("button", { onClick: () => { onChange({}); setAnchor(null); }, style: { ...S.btn(false), padding: '5px 10px', fontSize: 12 } }, "\u5168\u90E8\u6D88\u3059")))));
 }
@@ -616,7 +643,7 @@ function EntryScreen({ rec, up, loading }) {
                 React.createElement(Chips, { options: ['有', '普通', '無'], value: rec.energy, onChange: (v) => up('energy', v) }))),
         React.createElement("div", { style: S.card },
             React.createElement("div", { style: S.title }, "1\u65E5\u306E\u6642\u9593\u914D\u5206"),
-            React.createElement(TimeWheel, { blocks: rec.blocks, onChange: (v) => up('blocks', v), customLabel: rec.customLabel, onCustomLabel: (v) => up('customLabel', v) })),
+            React.createElement(TimeWheel, { blocks: rec.blocks, onChange: (v) => up('blocks', v), customLabel: rec.customLabel, onCustomLabel: (v) => up('customLabel', v), customHomeLabel: rec.customHomeLabel, onCustomHomeLabel: (v) => up('customHomeLabel', v) })),
         React.createElement("div", { style: S.card },
             React.createElement("div", { style: S.title }, "\u539F\u7A3F\uFF08\u6642\u9593\u914D\u5206\u304B\u3089\u81EA\u52D5\u8A08\u7B97\uFF09"),
             React.createElement("div", { style: { display: 'flex', gap: 28 } },
@@ -673,16 +700,23 @@ function CalendarScreen({ ym, setYm, records, onPick, today }) {
                     const r = byDate[ds];
                     const isToday = ds === today;
                     const h = r ? blocksToHours(r.blocks) : null;
+                    const kind = dayKind(r);
+                    const kd = kind ? DAY_KIND[kind] : null;
                     return (React.createElement("button", { key: ds, onClick: () => onPick(ds), style: {
                             height: 62, minWidth: 0, overflow: 'hidden', boxSizing: 'border-box', borderRadius: 8, cursor: 'pointer', padding: '4px 2px',
-                            border: isToday ? `2px solid ${T.accent}` : `1px solid ${T.line}`,
-                            background: r ? T.accentSoft : '#fff', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'space-between',
+                            border: isToday ? `2px solid ${T.accent}` : `1px solid ${kd ? kd.border : T.line}`,
+                            background: kd ? kd.bg : '#fff', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'space-between',
                         } },
                         React.createElement("div", { style: { fontSize: 12, fontWeight: isToday ? 700 : 500, color: T.ink } }, d),
                         React.createElement("div", { style: { fontSize: 16, lineHeight: 1 } }, (r === null || r === void 0 ? void 0 : r.satisfaction) ? (_b = SATISFACTION.find((s) => s.key === r.satisfaction)) === null || _b === void 0 ? void 0 : _b.emoji : ''),
                         React.createElement("div", { style: { fontSize: 10, color: CAT_MAP.sousaku.color, fontWeight: 700, minHeight: 12, whiteSpace: 'nowrap' } }, h && h.sousaku > 0 ? `${h.sousaku}h` : '')));
                 })),
-            React.createElement("div", { style: { fontSize: 11, color: T.muted, marginTop: 10 } }, "\u65E5\u4ED8\u3092\u30BF\u30C3\u30D7\u3067\u305D\u306E\u65E5\u306E\u8A18\u9332\u3078\u3002\u6570\u5B57\u306F\u5275\u4F5C\u6642\u9593\u3002"))));
+            React.createElement("div", { style: { display: 'flex', gap: 12, marginTop: 10, fontSize: 11, color: T.muted, flexWrap: 'wrap' } },
+                Object.entries(DAY_KIND).map(([k, v]) => (React.createElement("span", { key: k, style: { display: 'inline-flex', alignItems: 'center', gap: 4 } },
+                    React.createElement("span", { style: { width: 12, height: 12, borderRadius: 3, background: v.bg, border: `1px solid ${v.border}` } }),
+                    v.label))),
+                React.createElement("span", { style: { marginLeft: 'auto' } }, "\u4ED5\u4E8B=\u88DC\u4FEE\u3042\u308A\uFF0F\u5916\u51FA=\u81EA\u7531\u8A18\u5165\u3042\u308A")),
+            React.createElement("div", { style: { fontSize: 11, color: T.muted, marginTop: 6 } }, "\u65E5\u4ED8\u3092\u30BF\u30C3\u30D7\u3067\u305D\u306E\u65E5\u306E\u8A18\u9332\u3078\u3002\u6570\u5B57\u306F\u5275\u4F5C\u6642\u9593\u3002"))));
 }
 // ========== 傾向画面 ==========
 function StatsScreen({ ym, setYm, records, onImported, storageOk }) {
@@ -799,13 +833,28 @@ function StatsScreen({ ym, setYm, records, onImported, storageOk }) {
                     React.createElement("div", null,
                         React.createElement("span", { style: { color: T.muted } }, "\u85AC"),
                         "\u3000",
-                        medCounts.length ? medCounts.map(([k, v]) => `${k} ${v}回`).join(' / ') : 'なし')),
+                        medCounts.length ? medCounts.map(([k, v]) => `${k} ${v}回`).join(' / ') : 'なし'),
+                    React.createElement("div", null,
+                        React.createElement("span", { style: { color: T.muted } }, "\u5916\u51FA"),
+                        "\u3000\u4ED5\u4E8B ",
+                        monthRecs.filter((r) => dayKind(r) === 'work').length,
+                        "\u65E5 / \u79C1\u7528 ",
+                        monthRecs.filter((r) => dayKind(r) === 'out').length,
+                        "\u65E5 / \u5728\u5B85 ",
+                        monthRecs.filter((r) => dayKind(r) === 'home').length,
+                        "\u65E5")),
                 monthRecs.some((r) => r.customLabel) && (React.createElement("div", { style: { marginTop: 12 } },
-                    React.createElement("div", { style: S.title }, "\u81EA\u7531\u8A18\u5165\u306E\u5185\u5BB9"),
+                    React.createElement("div", { style: S.title }, "\u81EA\u7531\u8A18\u5165(\u5916\u51FA)"),
                     monthRecs.filter((r) => r.customLabel).map((r) => (React.createElement("div", { key: r.date, style: { fontSize: 12, color: T.ink, lineHeight: 1.7 } },
                         React.createElement("span", { style: { color: T.muted } }, fmtJp(r.date)),
                         "\u3000",
                         r.customLabel))))),
+                monthRecs.some((r) => r.customHomeLabel) && (React.createElement("div", { style: { marginTop: 12 } },
+                    React.createElement("div", { style: S.title }, "\u81EA\u7531\u8A18\u5165(\u5728\u5B85)"),
+                    monthRecs.filter((r) => r.customHomeLabel).map((r) => (React.createElement("div", { key: r.date, style: { fontSize: 12, color: T.ink, lineHeight: 1.7 } },
+                        React.createElement("span", { style: { color: T.muted } }, fmtJp(r.date)),
+                        "\u3000",
+                        r.customHomeLabel))))),
                 React.createElement("div", { style: { display: 'flex', gap: 20, marginTop: 12, fontSize: 12, color: T.muted, lineHeight: 1.7 } },
                     React.createElement("div", null,
                         "\u7761\u7720\uFF1A",
