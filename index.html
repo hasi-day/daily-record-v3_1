@@ -50,7 +50,7 @@ const SATISFACTION = [
     { key: 1, emoji: '😣' },
 ];
 const WEEKDAYS_MON = ['月', '火', '水', '木', '金', '土', '日'];
-const APP_VERSION = 'v3.10';
+const APP_VERSION = 'v3.11';
 const KEY_PREFIX = 'dr:';
 const PROBE_KEY = 'dr_probe';
 // ========== ユーティリティ ==========
@@ -484,6 +484,11 @@ function TimeWheel({ blocks, onChange, customLabel, onCustomLabel, customHomeLab
     const [anchor, setAnchor] = useState(null);
     const svgRef = useRef(null);
     const dragRef = useRef({ active: false, start: null, moved: false, draft: null });
+    const histRef = useRef([]);
+    const [histLen, setHistLen] = useState(0);
+    const pushHist = () => { histRef.current = [...histRef.current.slice(-19), { ...(blocks || {}) }]; setHistLen(histRef.current.length); };
+    const undo = () => { const h = histRef.current; if (!h.length)
+        return; const prev = h[h.length - 1]; histRef.current = h.slice(0, -1); setHistLen(histRef.current.length); setAnchor(null); onChange(prev); };
     const hours = useMemo(() => blocksToHours(blocks), [blocks]);
     const filled = Object.keys(blocks || {}).length;
     const size = 320, cx = size / 2, cy = size / 2, R = size / 2 - 22, rIn = 44;
@@ -498,6 +503,7 @@ function TimeWheel({ blocks, onChange, customLabel, onCustomLabel, customHomeLab
     const commitTap = (i) => {
         const next = { ...(blocks || {}) };
         if (!rangeMode) {
+            pushHist();
             const cs = cells(i);
             const allSame = cs.every((c) => next[c] === cat);
             cs.forEach((c) => { if (allSame)
@@ -511,6 +517,7 @@ function TimeWheel({ blocks, onChange, customLabel, onCustomLabel, customHomeLab
             setAnchor(i);
             return;
         }
+        pushHist();
         let [a, b] = anchor <= i ? [anchor, i] : [i, anchor];
         if (unit === 30) {
             a = a - (a % 2);
@@ -538,6 +545,7 @@ function TimeWheel({ blocks, onChange, customLabel, onCustomLabel, customHomeLab
             return;
         if (!d.moved) {
             d.moved = true;
+            pushHist();
             cells(d.start).forEach((c) => { d.draft[c] = cat; });
         }
         cells(i).forEach((c) => { d.draft[c] = cat; });
@@ -602,8 +610,11 @@ function TimeWheel({ blocks, onChange, customLabel, onCustomLabel, customHomeLab
         (cat === 'customhome' || hours.customhome > 0) && (React.createElement("div", { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 } },
             React.createElement("span", { style: { width: 11, height: 11, borderRadius: 999, background: CAT_MAP.customhome.color, flexShrink: 0 } }),
             React.createElement("input", { value: customHomeLabel || '', onChange: (e) => onCustomHomeLabel(e.target.value), placeholder: "\u5728\u5B85\u306E\u5185\u5BB9\uFF08\u30B2\u30FC\u30E0\u3001\u8AAD\u66F8\u3001\u914D\u4FE1\u306A\u3069\uFF09", style: { ...S.input, flex: 1, fontSize: 14 } }))),
-        filled > 0 && (React.createElement("div", { style: { textAlign: 'right', marginTop: 4 } },
-            React.createElement("button", { onClick: () => { onChange({}); setAnchor(null); }, style: { ...S.btn(false), padding: '5px 10px', fontSize: 12 } }, "\u5168\u90E8\u6D88\u3059")))));
+        React.createElement("div", { style: { display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 6 } },
+            React.createElement("button", { onClick: undo, disabled: histLen === 0, style: { ...S.btn(false), padding: '5px 12px', fontSize: 12, opacity: histLen === 0 ? 0.4 : 1 } },
+                "\u21B6 \u4E00\u3064\u623B\u3059",
+                histLen > 0 ? ` (${histLen})` : ''),
+            filled > 0 && (React.createElement("button", { onClick: () => { pushHist(); onChange({}); setAnchor(null); }, style: { ...S.btn(false), padding: '5px 10px', fontSize: 12 } }, "\u5168\u90E8\u6D88\u3059")))));
 }
 // ========== 記録画面 ==========
 function EntryScreen({ rec, up, loading }) {
