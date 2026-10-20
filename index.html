@@ -50,7 +50,9 @@ const SATISFACTION = [
     { key: 1, emoji: '😣' },
 ];
 const WEEKDAYS_MON = ['月', '火', '水', '木', '金', '土', '日'];
-const APP_VERSION = 'v3.11';
+const APP_VERSION = 'v3.12';
+const PLANTS_KEY = 'dr_plants';
+const DEFAULT_PLANTS = ['キセログラフィカ'];
 const KEY_PREFIX = 'dr:';
 const PROBE_KEY = 'dr_probe';
 // ========== ユーティリティ ==========
@@ -84,6 +86,7 @@ function newRecord(dateStr) {
         bowel: '', energy: '',
         memo: '', satisfaction: null,
         customLabel: '', customHomeLabel: '',
+        watered: [], // 水やりした植物名
         blocks: {}, // { "0".."95": categoryKey }  15分刻み
     };
 }
@@ -105,6 +108,8 @@ function normalizeRecord(r) {
     }
     if (out.periodDay !== '' && out.periodDay !== undefined)
         out.period = true;
+    if (!Array.isArray(out.watered))
+        out.watered = [];
     return out;
 }
 function isEmptyRecord(r) {
@@ -270,6 +275,16 @@ function countItems(recs, field) {
         m[name] = (m[name] || 0) + n; }));
     return Object.entries(m).sort((a, b) => b[1] - a[1]);
 }
+function countWatering(recs) {
+    const m = {};
+    [...recs].sort((a, b) => a.date.localeCompare(b.date)).forEach((r) => (r.watered || []).forEach((name) => {
+        if (!m[name])
+            m[name] = { name, n: 0, last: null };
+        m[name].n += 1;
+        m[name].last = r.date;
+    }));
+    return Object.values(m).sort((a, b) => b.n - a.n);
+}
 function fmtJpFull(dateStr) {
     const d = parseDate(dateStr);
     const w = ['日', '月', '火', '水', '木', '金', '土'][d.getDay()];
@@ -303,6 +318,8 @@ function exportRangeText(records, from, to, label) {
             L.push(`自由記入(外出): ${r.customLabel}`);
         if (r.customHomeLabel)
             L.push(`自由記入(在宅): ${r.customHomeLabel}`);
+        if (r.watered && r.watered.length)
+            L.push(`水やり: ${r.watered.join('、')}`);
         L.push(`満足度: ${r.satisfaction ? `${(_b = SATISFACTION.find((s) => s.key === r.satisfaction)) === null || _b === void 0 ? void 0 : _b.emoji} ${r.satisfaction}/5` : '-'}`);
         if (r.memo)
             L.push(`メモ: ${r.memo.replace(/\n/g, ' ⏎ ')}`);
@@ -321,7 +338,8 @@ function exportRangeText(records, from, to, label) {
     });
     const periodDays = recs.filter((r) => r.periodDay).length;
     const pains = countItems(recs, 'pain'), meds = countItems(recs, 'medicine');
-    const tail = `\n\n========================================\n【${label} サマリー】\n記録日数: ${recs.length}日\n${CATEGORIES.map((c) => `${c.label}: ${mt[c.key]}h`).join(' / ')}\n平均満足度: ${satN ? (satSum / satN).toFixed(1) : '-'}/5\n生理: ${periodDays}日\n痛み: ${pains.length ? pains.map(([k, v]) => `${k}${v}回`).join(' / ') : 'なし'}\n薬: ${meds.length ? meds.map(([k, v]) => `${k}${v}回`).join(' / ') : 'なし'}\n========================================\n`;
+    const waterCounts = countWatering(recs);
+    const tail = `\n\n========================================\n【${label} サマリー】\n記録日数: ${recs.length}日\n${CATEGORIES.map((c) => `${c.label}: ${mt[c.key]}h`).join(' / ')}\n平均満足度: ${satN ? (satSum / satN).toFixed(1) : '-'}/5\n生理: ${periodDays}日\n痛み: ${pains.length ? pains.map(([k, v]) => `${k}${v}回`).join(' / ') : 'なし'}\n薬: ${meds.length ? meds.map(([k, v]) => `${k}${v}回`).join(' / ') : 'なし'}\n水やり: ${waterCounts.length ? waterCounts.map((w) => `${w.name}${w.n}回`).join(' / ') : 'なし'}\n========================================\n`;
     return head + body + tail;
 }
 function parseImportText(text) {
@@ -416,6 +434,8 @@ function parseImportText(text) {
             rec.customLabel = m[1].trim();
         if ((m = block.match(/自由記入\(在宅\):\s*(.*)/)))
             rec.customHomeLabel = m[1].trim();
+        if ((m = block.match(/水やり:\s*(.*)/)))
+            rec.watered = m[1].split(/[、,]/).map((x) => x.trim()).filter(Boolean);
         if ((m = block.match(/満足度:\s*\S*\s*(\d)\/5/)))
             rec.satisfaction = parseInt(m[1], 10);
         if ((m = block.match(/メモ:\s*(.*)/)))
@@ -617,7 +637,39 @@ function TimeWheel({ blocks, onChange, customLabel, onCustomLabel, customHomeLab
             filled > 0 && (React.createElement("button", { onClick: () => { pushHist(); onChange({}); setAnchor(null); }, style: { ...S.btn(false), padding: '5px 10px', fontSize: 12 } }, "\u5168\u90E8\u6D88\u3059")))));
 }
 // ========== 記録画面 ==========
-function EntryScreen({ rec, up, loading }) {
+function WateringRow({ rec, up, plants, setPlants }) {
+    const [editing, setEditing] = useState(false);
+    const [adding, setAdding] = useState(false);
+    const [name, setName] = useState('');
+    const watered = rec.watered || [];
+    // その日に記録があるのに一覧から消えた植物も表示しておく
+    const shown = [...plants, ...watered.filter((w) => !plants.includes(w))];
+    const toggle = (p) => up('watered', watered.includes(p) ? watered.filter((x) => x !== p) : [...watered, p]);
+    const addPlant = () => {
+        const n = name.trim();
+        if (n && !plants.includes(n))
+            setPlants([...plants, n]);
+        setName('');
+        setAdding(false);
+    };
+    return (React.createElement(Row, { label: "\u6C34\u3084\u308A" },
+        React.createElement("div", { style: { display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' } },
+            shown.map((p) => (editing && plants.includes(p)
+                ? React.createElement("button", { key: p, onClick: () => setPlants(plants.filter((x) => x !== p)), style: { ...S.chip(false), borderStyle: 'dashed' } },
+                    p,
+                    " \u00D7")
+                : React.createElement("button", { key: p, onClick: () => toggle(p), style: S.chip(watered.includes(p), '#3B82C4') },
+                    "\uD83D\uDCA7 ",
+                    p))),
+            adding ? (React.createElement("span", { style: { display: 'inline-flex', gap: 4 } },
+                React.createElement("input", { value: name, autoFocus: true, onChange: (e) => setName(e.target.value), onKeyDown: (e) => { if (e.key === 'Enter')
+                        addPlant(); }, placeholder: "\u690D\u7269\u306E\u540D\u524D", style: { ...S.input, width: 110, fontSize: 13, padding: '5px 7px' } }),
+                React.createElement("button", { onClick: addPlant, style: { ...S.btn(false), padding: '5px 10px', fontSize: 12 } }, "\u8FFD\u52A0"))) : (React.createElement(React.Fragment, null,
+                React.createElement("button", { onClick: () => { setAdding(true); setEditing(false); }, style: { ...S.btn(false), padding: '5px 10px', fontSize: 12 } }, "\uFF0B"),
+                plants.length > 0 && React.createElement("button", { onClick: () => setEditing(!editing), style: { ...S.btn(false), padding: '5px 10px', fontSize: 12 } }, editing ? '完了' : '編集')))),
+        editing && React.createElement("div", { style: { fontSize: 11, color: T.muted, marginTop: 4 } }, "\u00D7\u3067\u4E00\u89A7\u304B\u3089\u5916\u3057\u307E\u3059\uFF08\u904E\u53BB\u306E\u6C34\u3084\u308A\u8A18\u9332\u306F\u6B8B\u308A\u307E\u3059\uFF09")));
+}
+function EntryScreen({ rec, up, loading, plants, setPlants }) {
     const hours = useMemo(() => blocksToHours(rec.blocks), [rec.blocks]);
     if (loading)
         return React.createElement("div", { style: { ...S.card, color: T.muted, fontSize: 13 } }, "\u8AAD\u307F\u8FBC\u307F\u4E2D\u2026");
@@ -651,7 +703,8 @@ function EntryScreen({ rec, up, loading }) {
             React.createElement(Row, { label: "\u6392\u4FBF" },
                 React.createElement(Chips, { options: ['有', '無'], value: rec.bowel, onChange: (v) => up('bowel', v) })),
             React.createElement(Row, { label: "\u6D3B\u529B" },
-                React.createElement(Chips, { options: ['有', '普通', '無'], value: rec.energy, onChange: (v) => up('energy', v) }))),
+                React.createElement(Chips, { options: ['有', '普通', '無'], value: rec.energy, onChange: (v) => up('energy', v) })),
+            React.createElement(WateringRow, { rec: rec, up: up, plants: plants, setPlants: setPlants })),
         React.createElement("div", { style: S.card },
             React.createElement("div", { style: S.title }, "1\u65E5\u306E\u6642\u9593\u914D\u5206"),
             React.createElement(TimeWheel, { blocks: rec.blocks, onChange: (v) => up('blocks', v), customLabel: rec.customLabel, onCustomLabel: (v) => up('customLabel', v), customHomeLabel: rec.customHomeLabel, onCustomHomeLabel: (v) => up('customHomeLabel', v) })),
@@ -704,7 +757,7 @@ function CalendarScreen({ ym, setYm, records, onPick, today }) {
             React.createElement("div", { style: { display: 'grid', gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', gap: 4 } },
                 WEEKDAYS_MON.map((w, i) => (React.createElement("div", { key: w, style: { textAlign: 'center', fontSize: 11, color: i >= 5 ? T.danger : T.muted, paddingBottom: 4 } }, w))),
                 cells.map((d, idx) => {
-                    var _b;
+                    var _b, _c;
                     if (d === null)
                         return React.createElement("div", { key: `e${idx}` });
                     const ds = `${ym.y}-${pad2(ym.m + 1)}-${pad2(d)}`;
@@ -714,18 +767,20 @@ function CalendarScreen({ ym, setYm, records, onPick, today }) {
                     const kind = dayKind(r);
                     const kd = kind ? DAY_KIND[kind] : null;
                     return (React.createElement("button", { key: ds, onClick: () => onPick(ds), style: {
-                            height: 62, minWidth: 0, overflow: 'hidden', boxSizing: 'border-box', borderRadius: 8, cursor: 'pointer', padding: '4px 2px',
+                            position: 'relative', height: 62, minWidth: 0, overflow: 'hidden', boxSizing: 'border-box', borderRadius: 8, cursor: 'pointer', padding: '4px 2px',
                             border: isToday ? `2px solid ${T.accent}` : `1px solid ${kd ? kd.border : T.line}`,
                             background: kd ? kd.bg : '#fff', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'space-between',
                         } },
+                        ((_b = r === null || r === void 0 ? void 0 : r.watered) === null || _b === void 0 ? void 0 : _b.length) > 0 && React.createElement("span", { style: { position: 'absolute', top: 2, right: 3, fontSize: 10, lineHeight: 1 } }, "\uD83D\uDCA7"),
                         React.createElement("div", { style: { fontSize: 12, fontWeight: isToday ? 700 : 500, color: T.ink } }, d),
-                        React.createElement("div", { style: { fontSize: 16, lineHeight: 1 } }, (r === null || r === void 0 ? void 0 : r.satisfaction) ? (_b = SATISFACTION.find((s) => s.key === r.satisfaction)) === null || _b === void 0 ? void 0 : _b.emoji : ''),
+                        React.createElement("div", { style: { fontSize: 16, lineHeight: 1 } }, (r === null || r === void 0 ? void 0 : r.satisfaction) ? (_c = SATISFACTION.find((s) => s.key === r.satisfaction)) === null || _c === void 0 ? void 0 : _c.emoji : ''),
                         React.createElement("div", { style: { fontSize: 10, color: CAT_MAP.sousaku.color, fontWeight: 700, minHeight: 12, whiteSpace: 'nowrap' } }, h && h.sousaku > 0 ? `${h.sousaku}h` : '')));
                 })),
             React.createElement("div", { style: { display: 'flex', gap: 12, marginTop: 10, fontSize: 11, color: T.muted, flexWrap: 'wrap' } },
                 Object.entries(DAY_KIND).map(([k, v]) => (React.createElement("span", { key: k, style: { display: 'inline-flex', alignItems: 'center', gap: 4 } },
                     React.createElement("span", { style: { width: 12, height: 12, borderRadius: 3, background: v.bg, border: `1px solid ${v.border}` } }),
                     v.label))),
+                React.createElement("span", null, "\uD83D\uDCA7 \u6C34\u3084\u308A"),
                 React.createElement("span", { style: { marginLeft: 'auto' } }, "\u4ED5\u4E8B=\u88DC\u4FEE\u3042\u308A\uFF0F\u5916\u51FA=\u81EA\u7531\u8A18\u5165\u3042\u308A")),
             React.createElement("div", { style: { fontSize: 11, color: T.muted, marginTop: 6 } }, "\u65E5\u4ED8\u3092\u30BF\u30C3\u30D7\u3067\u305D\u306E\u65E5\u306E\u8A18\u9332\u3078\u3002\u6570\u5B57\u306F\u5275\u4F5C\u6642\u9593\u3002"))));
 }
@@ -768,6 +823,7 @@ function StatsScreen({ ym, setYm, records, onImported, storageOk }) {
     const periodDays = monthRecs.filter((r) => r.periodDay).length;
     const painCounts = countItems(monthRecs, 'pain');
     const medCounts = countItems(monthRecs, 'medicine');
+    const waterCounts = countWatering(monthRecs);
     const doCopy = async () => {
         try {
             await navigator.clipboard.writeText(exportText);
@@ -846,6 +902,10 @@ function StatsScreen({ ym, setYm, records, onImported, storageOk }) {
                         "\u3000",
                         medCounts.length ? medCounts.map(([k, v]) => `${k} ${v}回`).join(' / ') : 'なし'),
                     React.createElement("div", null,
+                        React.createElement("span", { style: { color: T.muted } }, "\u6C34\u3084\u308A"),
+                        "\u3000",
+                        waterCounts.length ? waterCounts.map((w) => `${w.name} ${w.n}回（最終 ${fmtJp(w.last)}）`).join(' / ') : 'なし'),
+                    React.createElement("div", null,
                         React.createElement("span", { style: { color: T.muted } }, "\u5916\u51FA"),
                         "\u3000\u4ED5\u4E8B ",
                         monthRecs.filter((r) => dayKind(r) === 'work').length,
@@ -913,6 +973,8 @@ function App() {
     const [allRecords, setAllRecords] = useState([]);
     const [storage, setStorage] = useState({ state: 'checking', error: '' }); // checking | ok | ng
     const [saveState, setSaveState] = useState({ kind: 'idle', text: '' }); // idle | saving | saved | error
+    const [plants, setPlantsState] = useState(DEFAULT_PLANTS);
+    const setPlants = (list) => { setPlantsState(list); stSet(PLANTS_KEY, JSON.stringify(list)); };
     const [ym, setYm] = useState({ y: parseDate(today).getFullYear(), m: parseDate(today).getMonth() });
     const dirtyRef = useRef(false);
     const timerRef = useRef(null);
@@ -931,6 +993,15 @@ function App() {
                 return;
             setStorage(p.ok ? { state: 'ok', error: '' } : { state: 'ng', error: p.error });
             await refreshAll();
+            const pl = await stGet(PLANTS_KEY);
+            if (pl.ok) {
+                try {
+                    const arr = JSON.parse(pl.value);
+                    if (Array.isArray(arr))
+                        setPlantsState(arr);
+                }
+                catch (_b) { }
+            }
             const { record } = await loadRecord(today);
             if (!alive)
                 return;
@@ -1005,7 +1076,7 @@ function App() {
                     React.createElement("button", { onClick: () => switchDate(shiftDate(date, 1)), style: S.btn(false) }, "\u203A")),
                 date !== today && (React.createElement("div", { style: { textAlign: 'center', marginBottom: 10 } },
                     React.createElement("button", { onClick: () => switchDate(today), style: { ...S.btn(false), fontSize: 12, padding: '5px 12px' } }, "\u4ECA\u65E5\u306B\u623B\u308B"))),
-                React.createElement(EntryScreen, { rec: rec, up: up, loading: loadingRec }),
+                React.createElement(EntryScreen, { rec: rec, up: up, loading: loadingRec, plants: plants, setPlants: setPlants }),
                 React.createElement("div", { style: { marginTop: 12, textAlign: 'right' } },
                     React.createElement("button", { onClick: flushSave, style: S.btn(true) }, "\u4ECA\u3059\u3050\u4FDD\u5B58")))),
             screen === 'calendar' && (React.createElement(CalendarScreen, { ym: ym, setYm: setYm, records: allRecords, onPick: switchDate, today: today })),
