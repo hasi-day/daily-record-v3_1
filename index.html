@@ -50,9 +50,11 @@ const SATISFACTION = [
     { key: 1, emoji: '😣' },
 ];
 const WEEKDAYS_MON = ['月', '火', '水', '木', '金', '土', '日'];
-const APP_VERSION = 'v3.12';
+const APP_VERSION = 'v3.19';
 const PLANTS_KEY = 'dr_plants';
 const DEFAULT_PLANTS = ['キセログラフィカ'];
+const SNAKES_KEY = 'dr_snakes';
+const DEFAULT_SNAKES = ['ボールパイソン', 'カーペットパイソン'];
 const KEY_PREFIX = 'dr:';
 const PROBE_KEY = 'dr_probe';
 // ========== ユーティリティ ==========
@@ -87,6 +89,8 @@ function newRecord(dateStr) {
         memo: '', satisfaction: null,
         customLabel: '', customHomeLabel: '',
         watered: [], // 水やりした植物名
+        snakeWater: [], // 水換えしたヘビ
+        snakeFeed: [], // 餌やりしたヘビ
         blocks: {}, // { "0".."95": categoryKey }  15分刻み
     };
 }
@@ -110,6 +114,10 @@ function normalizeRecord(r) {
         out.period = true;
     if (!Array.isArray(out.watered))
         out.watered = [];
+    if (!Array.isArray(out.snakeWater))
+        out.snakeWater = [];
+    if (!Array.isArray(out.snakeFeed))
+        out.snakeFeed = [];
     return out;
 }
 function isEmptyRecord(r) {
@@ -257,6 +265,64 @@ function dayKind(r) {
         return 'out';
     return 'home';
 }
+// ========== 祝日(内閣府の祝日法ルールに基づく計算) ==========
+// 春分・秋分は1980〜2099年に有効な近似式。公式発表は前年2月のため、再来年以降は推定値。
+const SAT_COLOR = '#2563B0';
+const SUN_COLOR = '#C0392B';
+const holidayCache = {};
+function holidaysOfYear(y) {
+    if (holidayCache[y])
+        return holidayCache[y];
+    const h = {};
+    const key = (m, d) => `${y}-${pad2(m)}-${pad2(d)}`;
+    const nthMonday = (m, n) => { const first = new Date(y, m - 1, 1).getDay(); const d = 1 + ((8 - first) % 7) + (n - 1) * 7; return d; };
+    const add = (m, d, name) => { h[key(m, d)] = name; };
+    add(1, 1, '元日');
+    add(1, nthMonday(1, 2), '成人の日');
+    add(2, 11, '建国記念の日');
+    add(2, 23, '天皇誕生日');
+    const k = y - 1980;
+    add(3, Math.floor(20.8431 + 0.242194 * k - Math.floor(k / 4)), '春分の日');
+    add(4, 29, '昭和の日');
+    add(5, 3, '憲法記念日');
+    add(5, 4, 'みどりの日');
+    add(5, 5, 'こどもの日');
+    add(7, nthMonday(7, 3), '海の日');
+    add(8, 11, '山の日');
+    add(9, nthMonday(9, 3), '敬老の日');
+    add(9, Math.floor(23.2488 + 0.242194 * k - Math.floor(k / 4)), '秋分の日');
+    add(10, nthMonday(10, 2), 'スポーツの日');
+    add(11, 3, '文化の日');
+    add(11, 23, '勤労感謝の日');
+    // 国民の休日: 祝日に挟まれた平日
+    Object.keys({ ...h }).forEach((ds) => {
+        const next = shiftDate(ds, 1), next2 = shiftDate(ds, 2);
+        if (!h[next] && h[next2] && parseDate(next).getDay() !== 0)
+            h[next] = '休日';
+    });
+    // 振替休日: 日曜の祝日の後の、最初の祝日でない日
+    Object.keys({ ...h }).sort().forEach((ds) => {
+        if (parseDate(ds).getDay() === 0) {
+            let n = shiftDate(ds, 1);
+            while (h[n])
+                n = shiftDate(n, 1);
+            h[n] = '振替休日';
+        }
+    });
+    holidayCache[y] = h;
+    return h;
+}
+function holidayName(dateStr) {
+    return holidaysOfYear(parseDate(dateStr).getFullYear())[dateStr] || null;
+}
+function dateColor(dateStr) {
+    const wd = parseDate(dateStr).getDay();
+    if (wd === 0 || holidayName(dateStr))
+        return SUN_COLOR;
+    if (wd === 6)
+        return SAT_COLOR;
+    return T.ink;
+}
 // ========== 集計ヘルパ ==========
 function splitItems(str) {
     return String(str || '').split(/[、,，\/／]+/).map((x) => x.trim()).filter(Boolean);
@@ -275,15 +341,22 @@ function countItems(recs, field) {
         m[name] = (m[name] || 0) + n; }));
     return Object.entries(m).sort((a, b) => b[1] - a[1]);
 }
-function countWatering(recs) {
+function countWatering(recs, field = 'watered') {
     const m = {};
-    [...recs].sort((a, b) => a.date.localeCompare(b.date)).forEach((r) => (r.watered || []).forEach((name) => {
+    [...recs].sort((a, b) => a.date.localeCompare(b.date)).forEach((r) => (r[field] || []).forEach((name) => {
         if (!m[name])
             m[name] = { name, n: 0, last: null };
         m[name].n += 1;
         m[name].last = r.date;
     }));
     return Object.values(m).sort((a, b) => b.n - a.n);
+}
+function daysSince(dateStr) {
+    const a = parseDate(dateStr), b = parseDate(todayStr());
+    return Math.round((b - a) / 86400000);
+}
+function fmtCareList(list) {
+    return list.length ? list.map((w) => `${w.name} ${w.n}回（最終 ${fmtJp(w.last)}・${daysSince(w.last)}日前）`).join(' / ') : 'なし';
 }
 function fmtJpFull(dateStr) {
     const d = parseDate(dateStr);
@@ -320,6 +393,10 @@ function exportRangeText(records, from, to, label) {
             L.push(`自由記入(在宅): ${r.customHomeLabel}`);
         if (r.watered && r.watered.length)
             L.push(`水やり: ${r.watered.join('、')}`);
+        if (r.snakeWater && r.snakeWater.length)
+            L.push(`ヘビ水換え: ${r.snakeWater.join('、')}`);
+        if (r.snakeFeed && r.snakeFeed.length)
+            L.push(`ヘビ餌やり: ${r.snakeFeed.join('、')}`);
         L.push(`満足度: ${r.satisfaction ? `${(_b = SATISFACTION.find((s) => s.key === r.satisfaction)) === null || _b === void 0 ? void 0 : _b.emoji} ${r.satisfaction}/5` : '-'}`);
         if (r.memo)
             L.push(`メモ: ${r.memo.replace(/\n/g, ' ⏎ ')}`);
@@ -339,7 +416,9 @@ function exportRangeText(records, from, to, label) {
     const periodDays = recs.filter((r) => r.periodDay).length;
     const pains = countItems(recs, 'pain'), meds = countItems(recs, 'medicine');
     const waterCounts = countWatering(recs);
-    const tail = `\n\n========================================\n【${label} サマリー】\n記録日数: ${recs.length}日\n${CATEGORIES.map((c) => `${c.label}: ${mt[c.key]}h`).join(' / ')}\n平均満足度: ${satN ? (satSum / satN).toFixed(1) : '-'}/5\n生理: ${periodDays}日\n痛み: ${pains.length ? pains.map(([k, v]) => `${k}${v}回`).join(' / ') : 'なし'}\n薬: ${meds.length ? meds.map(([k, v]) => `${k}${v}回`).join(' / ') : 'なし'}\n水やり: ${waterCounts.length ? waterCounts.map((w) => `${w.name}${w.n}回`).join(' / ') : 'なし'}\n========================================\n`;
+    const swCounts = countWatering(recs, 'snakeWater'), sfCounts = countWatering(recs, 'snakeFeed');
+    const fmtC = (l) => (l.length ? l.map((w) => `${w.name}${w.n}回`).join(' / ') : 'なし');
+    const tail = `\n\n========================================\n【${label} サマリー】\n記録日数: ${recs.length}日\n${CATEGORIES.map((c) => `${c.label}: ${mt[c.key]}h`).join(' / ')}\n平均満足度: ${satN ? (satSum / satN).toFixed(1) : '-'}/5\n生理: ${periodDays}日\n痛み: ${pains.length ? pains.map(([k, v]) => `${k}${v}回`).join(' / ') : 'なし'}\n薬: ${meds.length ? meds.map(([k, v]) => `${k}${v}回`).join(' / ') : 'なし'}\n水やり: ${fmtC(waterCounts)}\nヘビ水換え: ${fmtC(swCounts)}\nヘビ餌やり: ${fmtC(sfCounts)}\n========================================\n`;
     return head + body + tail;
 }
 function parseImportText(text) {
@@ -434,8 +513,13 @@ function parseImportText(text) {
             rec.customLabel = m[1].trim();
         if ((m = block.match(/自由記入\(在宅\):\s*(.*)/)))
             rec.customHomeLabel = m[1].trim();
-        if ((m = block.match(/水やり:\s*(.*)/)))
-            rec.watered = m[1].split(/[、,]/).map((x) => x.trim()).filter(Boolean);
+        const splitNames = (v) => v.split(/[、,]/).map((x) => x.trim()).filter(Boolean);
+        if ((m = block.match(/(?:^|\n)水やり:\s*(.*)/)))
+            rec.watered = splitNames(m[1]);
+        if ((m = block.match(/ヘビ水換え:\s*(.*)/)))
+            rec.snakeWater = splitNames(m[1]);
+        if ((m = block.match(/ヘビ餌やり:\s*(.*)/)))
+            rec.snakeFeed = splitNames(m[1]);
         if ((m = block.match(/満足度:\s*\S*\s*(\d)\/5/)))
             rec.satisfaction = parseInt(m[1], 10);
         if ((m = block.match(/メモ:\s*(.*)/)))
@@ -637,39 +721,40 @@ function TimeWheel({ blocks, onChange, customLabel, onCustomLabel, customHomeLab
             filled > 0 && (React.createElement("button", { onClick: () => { pushHist(); onChange({}); setAnchor(null); }, style: { ...S.btn(false), padding: '5px 10px', fontSize: 12 } }, "\u5168\u90E8\u6D88\u3059")))));
 }
 // ========== 記録画面 ==========
-function WateringRow({ rec, up, plants, setPlants }) {
+function CareRow({ label, icon, color, field, rec, up, list, setList, placeholder }) {
     const [editing, setEditing] = useState(false);
     const [adding, setAdding] = useState(false);
     const [name, setName] = useState('');
-    const watered = rec.watered || [];
-    // その日に記録があるのに一覧から消えた植物も表示しておく
-    const shown = [...plants, ...watered.filter((w) => !plants.includes(w))];
-    const toggle = (p) => up('watered', watered.includes(p) ? watered.filter((x) => x !== p) : [...watered, p]);
-    const addPlant = () => {
+    const done = rec[field] || [];
+    // その日に記録があるのに一覧から消えた名前も表示しておく
+    const shown = [...list, ...done.filter((w) => !list.includes(w))];
+    const toggle = (p) => up(field, done.includes(p) ? done.filter((x) => x !== p) : [...done, p]);
+    const addItem = () => {
         const n = name.trim();
-        if (n && !plants.includes(n))
-            setPlants([...plants, n]);
+        if (n && !list.includes(n))
+            setList([...list, n]);
         setName('');
         setAdding(false);
     };
-    return (React.createElement(Row, { label: "\u6C34\u3084\u308A" },
+    return (React.createElement(Row, { label: label },
         React.createElement("div", { style: { display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' } },
-            shown.map((p) => (editing && plants.includes(p)
-                ? React.createElement("button", { key: p, onClick: () => setPlants(plants.filter((x) => x !== p)), style: { ...S.chip(false), borderStyle: 'dashed' } },
+            shown.map((p) => (editing && list.includes(p)
+                ? React.createElement("button", { key: p, onClick: () => setList(list.filter((x) => x !== p)), style: { ...S.chip(false), borderStyle: 'dashed' } },
                     p,
                     " \u00D7")
-                : React.createElement("button", { key: p, onClick: () => toggle(p), style: S.chip(watered.includes(p), '#3B82C4') },
-                    "\uD83D\uDCA7 ",
+                : React.createElement("button", { key: p, onClick: () => toggle(p), style: S.chip(done.includes(p), color) },
+                    icon,
+                    " ",
                     p))),
             adding ? (React.createElement("span", { style: { display: 'inline-flex', gap: 4 } },
                 React.createElement("input", { value: name, autoFocus: true, onChange: (e) => setName(e.target.value), onKeyDown: (e) => { if (e.key === 'Enter')
-                        addPlant(); }, placeholder: "\u690D\u7269\u306E\u540D\u524D", style: { ...S.input, width: 110, fontSize: 13, padding: '5px 7px' } }),
-                React.createElement("button", { onClick: addPlant, style: { ...S.btn(false), padding: '5px 10px', fontSize: 12 } }, "\u8FFD\u52A0"))) : (React.createElement(React.Fragment, null,
+                        addItem(); }, placeholder: placeholder, style: { ...S.input, width: 110, fontSize: 13, padding: '5px 7px' } }),
+                React.createElement("button", { onClick: addItem, style: { ...S.btn(false), padding: '5px 10px', fontSize: 12 } }, "\u8FFD\u52A0"))) : (React.createElement(React.Fragment, null,
                 React.createElement("button", { onClick: () => { setAdding(true); setEditing(false); }, style: { ...S.btn(false), padding: '5px 10px', fontSize: 12 } }, "\uFF0B"),
-                plants.length > 0 && React.createElement("button", { onClick: () => setEditing(!editing), style: { ...S.btn(false), padding: '5px 10px', fontSize: 12 } }, editing ? '完了' : '編集')))),
-        editing && React.createElement("div", { style: { fontSize: 11, color: T.muted, marginTop: 4 } }, "\u00D7\u3067\u4E00\u89A7\u304B\u3089\u5916\u3057\u307E\u3059\uFF08\u904E\u53BB\u306E\u6C34\u3084\u308A\u8A18\u9332\u306F\u6B8B\u308A\u307E\u3059\uFF09")));
+                list.length > 0 && React.createElement("button", { onClick: () => setEditing(!editing), style: { ...S.btn(false), padding: '5px 10px', fontSize: 12 } }, editing ? '完了' : '編集')))),
+        editing && React.createElement("div", { style: { fontSize: 11, color: T.muted, marginTop: 4 } }, "\u00D7\u3067\u4E00\u89A7\u304B\u3089\u5916\u3057\u307E\u3059\uFF08\u904E\u53BB\u306E\u8A18\u9332\u306F\u6B8B\u308A\u307E\u3059\uFF09")));
 }
-function EntryScreen({ rec, up, loading, plants, setPlants }) {
+function EntryScreen({ rec, up, loading, plants, setPlants, snakes, setSnakes }) {
     const hours = useMemo(() => blocksToHours(rec.blocks), [rec.blocks]);
     if (loading)
         return React.createElement("div", { style: { ...S.card, color: T.muted, fontSize: 13 } }, "\u8AAD\u307F\u8FBC\u307F\u4E2D\u2026");
@@ -704,7 +789,9 @@ function EntryScreen({ rec, up, loading, plants, setPlants }) {
                 React.createElement(Chips, { options: ['有', '無'], value: rec.bowel, onChange: (v) => up('bowel', v) })),
             React.createElement(Row, { label: "\u6D3B\u529B" },
                 React.createElement(Chips, { options: ['有', '普通', '無'], value: rec.energy, onChange: (v) => up('energy', v) })),
-            React.createElement(WateringRow, { rec: rec, up: up, plants: plants, setPlants: setPlants })),
+            React.createElement(CareRow, { label: "\u6C34\u3084\u308A", icon: "\uD83D\uDCA7", color: "#3B82C4", field: "watered", rec: rec, up: up, list: plants, setList: setPlants, placeholder: "\u690D\u7269\u306E\u540D\u524D" }),
+            React.createElement(CareRow, { label: "\u30D8\u30D3\u6C34\u63DB\u3048", icon: "\uD83D\uDEB0", color: "#2E9E9A", field: "snakeWater", rec: rec, up: up, list: snakes, setList: setSnakes, placeholder: "\u540D\u524D" }),
+            React.createElement(CareRow, { label: "\u30D8\u30D3\u990C\u3084\u308A", icon: "\uD83D\uDC01", color: "#B7791F", field: "snakeFeed", rec: rec, up: up, list: snakes, setList: setSnakes, placeholder: "\u540D\u524D" })),
         React.createElement("div", { style: S.card },
             React.createElement("div", { style: S.title }, "1\u65E5\u306E\u6642\u9593\u914D\u5206"),
             React.createElement(TimeWheel, { blocks: rec.blocks, onChange: (v) => up('blocks', v), customLabel: rec.customLabel, onCustomLabel: (v) => up('customLabel', v), customHomeLabel: rec.customHomeLabel, onCustomHomeLabel: (v) => up('customHomeLabel', v) })),
@@ -755,9 +842,9 @@ function CalendarScreen({ ym, setYm, records, onPick, today }) {
                         "\u65E5")),
                 React.createElement("button", { onClick: () => setYm(ym.m === 11 ? { y: ym.y + 1, m: 0 } : { y: ym.y, m: ym.m + 1 }), style: S.btn(false) }, "\u203A")),
             React.createElement("div", { style: { display: 'grid', gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', gap: 4 } },
-                WEEKDAYS_MON.map((w, i) => (React.createElement("div", { key: w, style: { textAlign: 'center', fontSize: 11, color: i >= 5 ? T.danger : T.muted, paddingBottom: 4 } }, w))),
+                WEEKDAYS_MON.map((w, i) => (React.createElement("div", { key: w, style: { textAlign: 'center', fontSize: 11, color: i === 6 ? SUN_COLOR : i === 5 ? SAT_COLOR : T.muted, paddingBottom: 4 } }, w))),
                 cells.map((d, idx) => {
-                    var _b, _c;
+                    var _b;
                     if (d === null)
                         return React.createElement("div", { key: `e${idx}` });
                     const ds = `${ym.y}-${pad2(ym.m + 1)}-${pad2(d)}`;
@@ -766,22 +853,24 @@ function CalendarScreen({ ym, setYm, records, onPick, today }) {
                     const h = r ? blocksToHours(r.blocks) : null;
                     const kind = dayKind(r);
                     const kd = kind ? DAY_KIND[kind] : null;
-                    return (React.createElement("button", { key: ds, onClick: () => onPick(ds), style: {
-                            position: 'relative', height: 62, minWidth: 0, overflow: 'hidden', boxSizing: 'border-box', borderRadius: 8, cursor: 'pointer', padding: '4px 2px',
+                    return (React.createElement("button", { key: ds, onClick: () => onPick(ds), title: holidayName(ds) || undefined, style: {
+                            position: 'relative', height: 76, minWidth: 0, overflow: 'hidden', boxSizing: 'border-box', borderRadius: 8, cursor: 'pointer', padding: '4px 2px',
                             border: isToday ? `2px solid ${T.accent}` : `1px solid ${kd ? kd.border : T.line}`,
                             background: kd ? kd.bg : '#fff', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'space-between',
                         } },
-                        ((_b = r === null || r === void 0 ? void 0 : r.watered) === null || _b === void 0 ? void 0 : _b.length) > 0 && React.createElement("span", { style: { position: 'absolute', top: 2, right: 3, fontSize: 10, lineHeight: 1 } }, "\uD83D\uDCA7"),
-                        React.createElement("div", { style: { fontSize: 12, fontWeight: isToday ? 700 : 500, color: T.ink } }, d),
-                        React.createElement("div", { style: { fontSize: 16, lineHeight: 1 } }, (r === null || r === void 0 ? void 0 : r.satisfaction) ? (_c = SATISFACTION.find((s) => s.key === r.satisfaction)) === null || _c === void 0 ? void 0 : _c.emoji : ''),
-                        React.createElement("div", { style: { fontSize: 10, color: CAT_MAP.sousaku.color, fontWeight: 700, minHeight: 12, whiteSpace: 'nowrap' } }, h && h.sousaku > 0 ? `${h.sousaku}h` : '')));
+                        React.createElement("div", { style: { fontSize: 12, fontWeight: isToday ? 700 : 500, color: dateColor(ds) } }, d),
+                        React.createElement("div", { style: { fontSize: 16, lineHeight: 1 } }, (r === null || r === void 0 ? void 0 : r.satisfaction) ? (_b = SATISFACTION.find((s) => s.key === r.satisfaction)) === null || _b === void 0 ? void 0 : _b.emoji : ''),
+                        React.createElement("div", { style: { fontSize: 10, color: CAT_MAP.sousaku.color, fontWeight: 700, minHeight: 12, whiteSpace: 'nowrap' } }, h && h.sousaku > 0 ? `${h.sousaku}h` : ''),
+                        (() => { var _b, _c, _d; const ics = [((_b = r === null || r === void 0 ? void 0 : r.watered) === null || _b === void 0 ? void 0 : _b.length) > 0 && '💧', ((_c = r === null || r === void 0 ? void 0 : r.snakeWater) === null || _c === void 0 ? void 0 : _c.length) > 0 && '🚰', ((_d = r === null || r === void 0 ? void 0 : r.snakeFeed) === null || _d === void 0 ? void 0 : _d.length) > 0 && '🐁'].filter(Boolean); return (React.createElement("div", { style: { display: 'grid', gridTemplateColumns: `repeat(${Math.max(ics.length, 1)}, 13px)`, justifyContent: 'center', fontSize: 9, lineHeight: 1, minHeight: 11, transform: 'translateX(-1px)' } }, ics.map((ic) => React.createElement("span", { key: ic, style: { textAlign: 'center', transform: ic === '🚰' ? 'translateX(-2px)' : 'none' } }, ic)))); })()));
                 })),
-            React.createElement("div", { style: { display: 'flex', gap: 12, marginTop: 10, fontSize: 11, color: T.muted, flexWrap: 'wrap' } },
+            React.createElement("div", { style: { display: 'flex', gap: 8, marginTop: 10, fontSize: 11, color: T.muted, whiteSpace: 'nowrap', overflowX: 'auto' } },
                 Object.entries(DAY_KIND).map(([k, v]) => (React.createElement("span", { key: k, style: { display: 'inline-flex', alignItems: 'center', gap: 4 } },
                     React.createElement("span", { style: { width: 12, height: 12, borderRadius: 3, background: v.bg, border: `1px solid ${v.border}` } }),
                     v.label))),
-                React.createElement("span", null, "\uD83D\uDCA7 \u6C34\u3084\u308A"),
-                React.createElement("span", { style: { marginLeft: 'auto' } }, "\u4ED5\u4E8B=\u88DC\u4FEE\u3042\u308A\uFF0F\u5916\u51FA=\u81EA\u7531\u8A18\u5165\u3042\u308A")),
+                React.createElement("span", null, "\uD83D\uDCA7\u6C34\u3084\u308A"),
+                React.createElement("span", null, "\uD83D\uDEB0\u6C34\u63DB\u3048"),
+                React.createElement("span", null, "\uD83D\uDC01\u990C\u3084\u308A")),
+            React.createElement("div", { style: { fontSize: 11, color: T.muted, marginTop: 6, textAlign: 'left' } }, "\u4ED5\u4E8B=\u88DC\u4FEE\u3042\u308A\uFF0F\u5916\u51FA=\u81EA\u7531\u8A18\u5165(\u5916\u51FA)\u3042\u308A"),
             React.createElement("div", { style: { fontSize: 11, color: T.muted, marginTop: 6 } }, "\u65E5\u4ED8\u3092\u30BF\u30C3\u30D7\u3067\u305D\u306E\u65E5\u306E\u8A18\u9332\u3078\u3002\u6570\u5B57\u306F\u5275\u4F5C\u6642\u9593\u3002"))));
 }
 // ========== 傾向画面 ==========
@@ -824,6 +913,8 @@ function StatsScreen({ ym, setYm, records, onImported, storageOk }) {
     const painCounts = countItems(monthRecs, 'pain');
     const medCounts = countItems(monthRecs, 'medicine');
     const waterCounts = countWatering(monthRecs);
+    const swCounts = countWatering(monthRecs, 'snakeWater');
+    const sfCounts = countWatering(monthRecs, 'snakeFeed');
     const doCopy = async () => {
         try {
             await navigator.clipboard.writeText(exportText);
@@ -904,7 +995,15 @@ function StatsScreen({ ym, setYm, records, onImported, storageOk }) {
                     React.createElement("div", null,
                         React.createElement("span", { style: { color: T.muted } }, "\u6C34\u3084\u308A"),
                         "\u3000",
-                        waterCounts.length ? waterCounts.map((w) => `${w.name} ${w.n}回（最終 ${fmtJp(w.last)}）`).join(' / ') : 'なし'),
+                        fmtCareList(waterCounts)),
+                    React.createElement("div", null,
+                        React.createElement("span", { style: { color: T.muted } }, "\u30D8\u30D3\u6C34\u63DB\u3048"),
+                        "\u3000",
+                        fmtCareList(swCounts)),
+                    React.createElement("div", null,
+                        React.createElement("span", { style: { color: T.muted } }, "\u30D8\u30D3\u990C\u3084\u308A"),
+                        "\u3000",
+                        fmtCareList(sfCounts)),
                     React.createElement("div", null,
                         React.createElement("span", { style: { color: T.muted } }, "\u5916\u51FA"),
                         "\u3000\u4ED5\u4E8B ",
@@ -975,6 +1074,8 @@ function App() {
     const [saveState, setSaveState] = useState({ kind: 'idle', text: '' }); // idle | saving | saved | error
     const [plants, setPlantsState] = useState(DEFAULT_PLANTS);
     const setPlants = (list) => { setPlantsState(list); stSet(PLANTS_KEY, JSON.stringify(list)); };
+    const [snakes, setSnakesState] = useState(DEFAULT_SNAKES);
+    const setSnakes = (list) => { setSnakesState(list); stSet(SNAKES_KEY, JSON.stringify(list)); };
     const [ym, setYm] = useState({ y: parseDate(today).getFullYear(), m: parseDate(today).getMonth() });
     const dirtyRef = useRef(false);
     const timerRef = useRef(null);
@@ -993,6 +1094,15 @@ function App() {
                 return;
             setStorage(p.ok ? { state: 'ok', error: '' } : { state: 'ng', error: p.error });
             await refreshAll();
+            const sn = await stGet(SNAKES_KEY);
+            if (sn.ok) {
+                try {
+                    const arr = JSON.parse(sn.value);
+                    if (Array.isArray(arr))
+                        setSnakesState(arr);
+                }
+                catch (_b) { }
+            }
             const pl = await stGet(PLANTS_KEY);
             if (pl.ok) {
                 try {
@@ -1000,7 +1110,7 @@ function App() {
                     if (Array.isArray(arr))
                         setPlantsState(arr);
                 }
-                catch (_b) { }
+                catch (_c) { }
             }
             const { record } = await loadRecord(today);
             if (!alive)
@@ -1071,12 +1181,14 @@ function App() {
                 React.createElement("div", { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 } },
                     React.createElement("button", { onClick: () => switchDate(shiftDate(date, -1)), style: S.btn(false) }, "\u2039"),
                     React.createElement("div", { style: { textAlign: 'center' } },
-                        React.createElement("div", { style: { fontSize: 18, fontWeight: 700 } }, fmtJp(date)),
+                        React.createElement("div", { style: { fontSize: 18, fontWeight: 700, color: dateColor(date) } },
+                            fmtJp(date),
+                            holidayName(date) ? React.createElement("span", { style: { fontSize: 12, fontWeight: 500, marginLeft: 6 } }, holidayName(date)) : null),
                         React.createElement("div", { style: { fontSize: 11, color: saveState.kind === 'error' ? T.danger : T.muted, minHeight: 14 } }, saveState.text || (storage.state === 'ok' ? '入力すると自動で保存します' : ''))),
                     React.createElement("button", { onClick: () => switchDate(shiftDate(date, 1)), style: S.btn(false) }, "\u203A")),
                 date !== today && (React.createElement("div", { style: { textAlign: 'center', marginBottom: 10 } },
                     React.createElement("button", { onClick: () => switchDate(today), style: { ...S.btn(false), fontSize: 12, padding: '5px 12px' } }, "\u4ECA\u65E5\u306B\u623B\u308B"))),
-                React.createElement(EntryScreen, { rec: rec, up: up, loading: loadingRec, plants: plants, setPlants: setPlants }),
+                React.createElement(EntryScreen, { rec: rec, up: up, loading: loadingRec, plants: plants, setPlants: setPlants, snakes: snakes, setSnakes: setSnakes }),
                 React.createElement("div", { style: { marginTop: 12, textAlign: 'right' } },
                     React.createElement("button", { onClick: flushSave, style: S.btn(true) }, "\u4ECA\u3059\u3050\u4FDD\u5B58")))),
             screen === 'calendar' && (React.createElement(CalendarScreen, { ym: ym, setYm: setYm, records: allRecords, onPick: switchDate, today: today })),
