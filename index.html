@@ -11,6 +11,9 @@
   button { font-family: inherit; }
   input, textarea { font-family: inherit; }
   input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
+  /* iPhoneのSafariは16px未満の入力欄をタップすると自動で拡大するため、全入力欄を16px以上に固定 */
+  input, select, textarea { font-size: 16px !important; }
+  html { -webkit-text-size-adjust: 100%; }
 </style>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
@@ -50,7 +53,7 @@ const SATISFACTION = [
     { key: 1, emoji: '😣' },
 ];
 const WEEKDAYS_MON = ['月', '火', '水', '木', '金', '土', '日'];
-const APP_VERSION = 'v3.19';
+const APP_VERSION = 'v3.20';
 const PLANTS_KEY = 'dr_plants';
 const DEFAULT_PLANTS = ['キセログラフィカ'];
 const SNAKES_KEY = 'dr_snakes';
@@ -215,13 +218,13 @@ async function loadRecord(dateStr) {
             memCache[key] = g.value;
             return { record: normalizeRecord({ ...newRecord(dateStr), ...parsed, date: dateStr }), from: 'storage' };
         }
-        catch ( /* fallthrough */_b) { /* fallthrough */ }
+        catch (_b) { /* fallthrough */ }
     }
     if (memCache[key]) {
         try {
             return { record: normalizeRecord({ ...newRecord(dateStr), ...JSON.parse(memCache[key]), date: dateStr }), from: 'memory' };
         }
-        catch ( /* fallthrough */_c) { /* fallthrough */ }
+        catch (_c) { /* fallthrough */ }
     }
     return { record: newRecord(dateStr), from: 'new' };
 }
@@ -538,7 +541,7 @@ const S = {
     wrap: { maxWidth: 520, margin: '0 auto', padding: '14px 14px 0' },
     card: { background: T.paper, border: `1px solid ${T.line}`, borderRadius: 12, padding: '14px 14px 12px' },
     title: { fontSize: 13, fontWeight: 700, color: T.ink, marginBottom: 8 },
-    input: { border: `1px solid ${T.line}`, borderRadius: 8, padding: '7px 9px', fontSize: 15, background: '#fff', color: T.ink, outline: 'none' },
+    input: { border: `1px solid ${T.line}`, borderRadius: 8, padding: '7px 9px', fontSize: 16, background: '#fff', color: T.ink, outline: 'none', minWidth: 0, boxSizing: 'border-box' },
     btn: (primary) => ({
         padding: '9px 14px', borderRadius: 9, fontSize: 14, cursor: 'pointer', fontWeight: 600,
         border: primary ? 'none' : `1px solid ${T.line}`, background: primary ? T.accent : '#fff', color: primary ? '#fff' : T.ink,
@@ -710,10 +713,10 @@ function TimeWheel({ blocks, onChange, customLabel, onCustomLabel, customHomeLab
             React.createElement("text", { x: cx, y: cy + 9, fontSize: 9, fill: T.muted, textAnchor: "middle" }, "/ 24h")),
         (cat === 'custom' || hours.custom > 0) && (React.createElement("div", { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 } },
             React.createElement("span", { style: { width: 11, height: 11, borderRadius: 999, background: CAT_MAP.custom.color, flexShrink: 0 } }),
-            React.createElement("input", { value: customLabel || '', onChange: (e) => onCustomLabel(e.target.value), placeholder: "\u5916\u51FA\u306E\u5185\u5BB9\uFF08\u6620\u753B\u3001\u5C55\u793A\u3001\u30AB\u30D5\u30A7\u306A\u3069\uFF09", style: { ...S.input, flex: 1, fontSize: 14 } }))),
+            React.createElement("input", { value: customLabel || '', onChange: (e) => onCustomLabel(e.target.value), placeholder: "\u5916\u51FA\u306E\u5185\u5BB9\uFF08\u6620\u753B\u3001\u5C55\u793A\u3001\u30AB\u30D5\u30A7\u306A\u3069\uFF09", style: { ...S.input, flex: 1, fontSize: 16 } }))),
         (cat === 'customhome' || hours.customhome > 0) && (React.createElement("div", { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 } },
             React.createElement("span", { style: { width: 11, height: 11, borderRadius: 999, background: CAT_MAP.customhome.color, flexShrink: 0 } }),
-            React.createElement("input", { value: customHomeLabel || '', onChange: (e) => onCustomHomeLabel(e.target.value), placeholder: "\u5728\u5B85\u306E\u5185\u5BB9\uFF08\u30B2\u30FC\u30E0\u3001\u8AAD\u66F8\u3001\u914D\u4FE1\u306A\u3069\uFF09", style: { ...S.input, flex: 1, fontSize: 14 } }))),
+            React.createElement("input", { value: customHomeLabel || '', onChange: (e) => onCustomHomeLabel(e.target.value), placeholder: "\u5728\u5B85\u306E\u5185\u5BB9\uFF08\u30B2\u30FC\u30E0\u3001\u8AAD\u66F8\u3001\u914D\u4FE1\u306A\u3069\uFF09", style: { ...S.input, flex: 1, fontSize: 16 } }))),
         React.createElement("div", { style: { display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 6 } },
             React.createElement("button", { onClick: undo, disabled: histLen === 0, style: { ...S.btn(false), padding: '5px 12px', fontSize: 12, opacity: histLen === 0 ? 0.4 : 1 } },
                 "\u21B6 \u4E00\u3064\u623B\u3059",
@@ -748,7 +751,7 @@ function CareRow({ label, icon, color, field, rec, up, list, setList, placeholde
                     p))),
             adding ? (React.createElement("span", { style: { display: 'inline-flex', gap: 4 } },
                 React.createElement("input", { value: name, autoFocus: true, onChange: (e) => setName(e.target.value), onKeyDown: (e) => { if (e.key === 'Enter')
-                        addItem(); }, placeholder: placeholder, style: { ...S.input, width: 110, fontSize: 13, padding: '5px 7px' } }),
+                        addItem(); }, placeholder: placeholder, style: { ...S.input, width: 130, fontSize: 16, padding: '5px 7px' } }),
                 React.createElement("button", { onClick: addItem, style: { ...S.btn(false), padding: '5px 10px', fontSize: 12 } }, "\u8FFD\u52A0"))) : (React.createElement(React.Fragment, null,
                 React.createElement("button", { onClick: () => { setAdding(true); setEditing(false); }, style: { ...S.btn(false), padding: '5px 10px', fontSize: 12 } }, "\uFF0B"),
                 list.length > 0 && React.createElement("button", { onClick: () => setEditing(!editing), style: { ...S.btn(false), padding: '5px 10px', fontSize: 12 } }, editing ? '完了' : '編集')))),
@@ -1040,16 +1043,16 @@ function StatsScreen({ ym, setYm, records, onImported, storageOk }) {
                 React.createElement("button", { onClick: exportToday, style: S.btn(false) }, "\u4ECA\u65E5"),
                 React.createElement("button", { onClick: exportAll, style: S.btn(false) }, "\u5168\u90E8")),
             React.createElement("div", { style: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 8 } },
-                React.createElement("input", { type: "date", value: expFrom, onChange: (e) => setExpFrom(e.target.value), style: { ...S.input, fontSize: 13, padding: '5px 7px' } }),
+                React.createElement("input", { type: "date", value: expFrom, onChange: (e) => setExpFrom(e.target.value), style: { ...S.input, fontSize: 16, padding: '5px 7px', WebkitAppearance: 'none', appearance: 'none', maxWidth: '100%' } }),
                 React.createElement("span", { style: { fontSize: 12, color: T.muted } }, "\u301C"),
-                React.createElement("input", { type: "date", value: expTo, onChange: (e) => setExpTo(e.target.value), style: { ...S.input, fontSize: 13, padding: '5px 7px' } }),
+                React.createElement("input", { type: "date", value: expTo, onChange: (e) => setExpTo(e.target.value), style: { ...S.input, fontSize: 16, padding: '5px 7px', WebkitAppearance: 'none', appearance: 'none', maxWidth: '100%' } }),
                 React.createElement("button", { onClick: exportRange, disabled: !expFrom || !expTo, style: { ...S.btn(false), opacity: expFrom && expTo ? 1 : 0.4 } }, "\u671F\u9593\u3067\u51FA\u3059")),
             exportText && React.createElement("button", { onClick: doCopy, style: S.btn(false) }, copied ? 'コピーしました' : 'コピー'),
-            exportText && (React.createElement("textarea", { readOnly: true, value: exportText, onFocus: (e) => e.target.select(), style: { ...S.input, width: '100%', boxSizing: 'border-box', minHeight: 160, marginTop: 10, fontSize: 12, fontFamily: 'ui-monospace, Menlo, monospace', lineHeight: 1.5 } }))),
+            exportText && (React.createElement("textarea", { readOnly: true, value: exportText, onFocus: (e) => e.target.select(), style: { ...S.input, width: '100%', boxSizing: 'border-box', minHeight: 160, marginTop: 10, fontSize: 16, fontFamily: 'ui-monospace, Menlo, monospace', lineHeight: 1.5 } }))),
         React.createElement("div", { style: S.card },
             React.createElement("div", { style: S.title }, "\u53D6\u308A\u8FBC\u307F\uFF08\u30A8\u30AF\u30B9\u30DD\u30FC\u30C8\u3057\u305F\u30C6\u30AD\u30B9\u30C8\u3092\u623B\u3059\uFF09"),
             React.createElement("div", { style: { fontSize: 12, color: T.muted, marginBottom: 8 } }, "\u540C\u3058\u65E5\u4ED8\u304C\u3042\u308C\u3070\u4E0A\u66F8\u304D\u3057\u307E\u3059\u3002"),
-            React.createElement("textarea", { value: importText, onChange: (e) => setImportText(e.target.value), placeholder: "\u3053\u3053\u306B\u8CBC\u308A\u4ED8\u3051", style: { ...S.input, width: '100%', boxSizing: 'border-box', minHeight: 90, fontSize: 12, fontFamily: 'ui-monospace, Menlo, monospace' } }),
+            React.createElement("textarea", { value: importText, onChange: (e) => setImportText(e.target.value), placeholder: "\u3053\u3053\u306B\u8CBC\u308A\u4ED8\u3051", style: { ...S.input, width: '100%', boxSizing: 'border-box', minHeight: 90, fontSize: 16, fontFamily: 'ui-monospace, Menlo, monospace' } }),
             React.createElement("div", { style: { display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 } },
                 React.createElement("button", { onClick: doImport, disabled: !importText.trim(), style: { ...S.btn(true), opacity: importText.trim() ? 1 : 0.4 } }, "\u53D6\u308A\u8FBC\u3080"),
                 React.createElement("div", { style: { fontSize: 12, color: T.muted } }, importMsg))),
